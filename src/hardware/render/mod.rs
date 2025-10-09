@@ -46,7 +46,12 @@ fn render_segment(display: &Option<EncoderDisplay>) -> RgbImage {
 
     if let Some(data) = display {
         draw_title(&mut segment, &data.title);
-        draw_value(&mut segment, &data.value, data.status.is_some());
+        draw_value(
+            &mut segment,
+            &data.value,
+            data.status.is_some(),
+            data.value_color,
+        );
 
         if let Some(status) = &data.status {
             draw_status(&mut segment, status);
@@ -104,7 +109,12 @@ fn draw_title(segment: &mut RgbImage, title: &str) {
     );
 }
 
-fn draw_value(segment: &mut RgbImage, value: &str, has_status: bool) {
+fn draw_value(
+    segment: &mut RgbImage,
+    value: &str,
+    has_status: bool,
+    color: Option<[u8; 3]>,
+) {
     let scale = 4;
     let (text_width, text_height) = font::measure_text(value, scale);
     let mut y_center = (SEGMENT_HEIGHT / 2).saturating_sub(text_height / 2);
@@ -118,7 +128,7 @@ fn draw_value(segment: &mut RgbImage, value: &str, has_status: bool) {
         x,
         y_center.max(SEGMENT_MARGIN),
         scale,
-        VALUE_COLOR,
+        color.unwrap_or(VALUE_COLOR),
     );
 }
 

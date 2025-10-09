@@ -24,8 +24,9 @@ where
     remaining: u64,
     step: u64,
     min: u64,
-    max: u64,
-    state: TimerDisplayState,
+   max: u64,
+   state: TimerDisplayState,
+    finished_blink: bool,
 }
 
 impl<D> TimerController<D>
@@ -62,6 +63,7 @@ where
             min: min_bound,
             max: max_bound,
             state: TimerDisplayState::Setting,
+            finished_blink: false,
         };
         controller.push_display()?;
         Ok(controller)
@@ -97,6 +99,9 @@ where
             }
             TimerDisplayState::Finished => {
                 display.progress = Some(0.0);
+                if self.finished_blink {
+                    display.value_color = Some(PROGRESS_ALERT_COLOR);
+                }
             }
         }
 
@@ -116,18 +121,21 @@ where
         }
         self.remaining = self.configured;
         self.state = TimerDisplayState::Running;
+        self.finished_blink = false;
         self.push_display()
     }
 
     fn reset_to_setting(&mut self) -> Result<()> {
         self.remaining = self.configured;
         self.state = TimerDisplayState::Setting;
+        self.finished_blink = false;
         self.push_display()
     }
 
     fn finish(&mut self) -> Result<()> {
         self.remaining = 0;
         self.state = TimerDisplayState::Finished;
+        self.finished_blink = true;
         self.push_display()
     }
 }
@@ -150,6 +158,7 @@ where
         self.configured = self.clamp_configured(new_value);
         self.remaining = self.configured;
         self.state = TimerDisplayState::Setting;
+        self.finished_blink = false;
         self.push_display()
     }
 
@@ -170,19 +179,24 @@ where
     D: DisplayPipeline,
 {
     fn on_tick(&mut self) -> Result<()> {
-        if !matches!(self.state, TimerDisplayState::Running) {
-            return Ok(());
-        }
+        match self.state {
+            TimerDisplayState::Setting => Ok(()),
+            TimerDisplayState::Running => {
+                if self.remaining == 0 {
+                    return self.finish();
+                }
 
-        if self.remaining == 0 {
-            return self.finish();
-        }
-
-        self.remaining = self.remaining.saturating_sub(1);
-        if self.remaining == 0 {
-            self.finish()
-        } else {
-            self.push_display()
+                self.remaining = self.remaining.saturating_sub(1);
+                if self.remaining == 0 {
+                    self.finish()
+                } else {
+                    self.push_display()
+                }
+            }
+            TimerDisplayState::Finished => {
+                self.finished_blink = !self.finished_blink;
+                self.push_display()
+            }
         }
     }
 }
@@ -337,5 +351,44 @@ mod tests {
         let updates = display.updates.lock().unwrap();
         let last = updates.last().unwrap();
         assert_eq!(last.status.as_deref(), Some("set"));
+    }
+
+    #[test]
+    fn finished_timer_value_blinks_blue() {
+        let display = TestDisplay::default();
+        let mut controller = TimerController::new(
+            display.clone(),
+            EncoderId::Three,
+            1,
+            1,
+            600,
+            2,
+        )
+        .unwrap();
+
+        controller.on_press().unwrap();
+        controller.on_tick().unwrap(); // remaining -> 1
+        controller.on_tick().unwrap(); // finish
+        assert!(matches!(controller.state, TimerDisplayState::Finished));
+
+        {
+            let updates = display.updates.lock().unwrap();
+            let last = updates.last().unwrap();
+            assert_eq!(last.value_color, Some(PROGRESS_ALERT_COLOR));
+        }
+
+        controller.on_tick().unwrap(); // blink off
+        {
+            let updates = display.updates.lock().unwrap();
+            let last = updates.last().unwrap();
+            assert_eq!(last.value_color, None);
+        }
+
+        controller.on_tick().unwrap(); // blink on again
+        {
+            let updates = display.updates.lock().unwrap();
+            let last = updates.last().unwrap();
+            assert_eq!(last.value_color, Some(PROGRESS_ALERT_COLOR));
+        }
     }
 }

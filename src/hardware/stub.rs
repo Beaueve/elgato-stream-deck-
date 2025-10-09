@@ -33,6 +33,7 @@ pub struct EncoderDisplay {
     pub status: Option<String>,
     pub progress: Option<f32>,
     pub progress_color: Option<[u8; 3]>,
+    pub value_color: Option<[u8; 3]>,
 }
 
 impl EncoderDisplay {
@@ -43,6 +44,7 @@ impl EncoderDisplay {
             status: None,
             progress: None,
             progress_color: None,
+            value_color: None,
         }
     }
 }
