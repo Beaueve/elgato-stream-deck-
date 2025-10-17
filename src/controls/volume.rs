@@ -77,6 +77,10 @@ where
         display.progress = Some(0.0);
         self.display.update_encoder(self.encoder, display)
     }
+
+    pub fn sync(&mut self) -> Result<()> {
+        self.refresh_state()
+    }
 }
 
 impl<A, D> EncoderController for VolumeController<A, D>
@@ -174,5 +178,29 @@ mod tests {
         let events = display.inner.lock().unwrap();
         let (_, last) = events.last().unwrap();
         assert!(matches!(last.status.as_deref(), Some("muted")));
+    }
+
+    #[test]
+    fn sync_refreshes_display_from_backend_state() {
+        let audio_backend = MockAudioBackend {
+            inner: Arc::new(Mutex::new(MockAudioState {
+                volume: 30.0,
+                muted: false,
+                ..Default::default()
+            })),
+        };
+        let display = TestDisplay::default();
+        let mut controller =
+            VolumeController::new(audio_backend.clone(), display.clone(), EncoderId::One, 5)
+                .expect("init");
+
+        display.inner.lock().unwrap().clear();
+        audio_backend.inner.lock().unwrap().volume = 12.0;
+        controller.sync().expect("sync");
+
+        let events = display.inner.lock().unwrap();
+        assert!(!events.is_empty());
+        let (_, last) = events.last().unwrap();
+        assert_eq!(last.value.trim(), "12%");
     }
 }

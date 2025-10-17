@@ -237,6 +237,7 @@ impl App {
         if let Some(toggle) = self.audio_toggle.as_mut() {
             if index == toggle.button_index() {
                 toggle.on_button_pressed(index)?;
+                self.volume.sync()?;
                 handled = true;
             }
         }
