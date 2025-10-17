@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 
+use std::sync::Arc;
+
 use anyhow::{Result, anyhow};
 use crossbeam_channel::Receiver;
+use image::RgbaImage;
 
 #[derive(Clone, Debug)]
 pub struct HardwareConfig {
@@ -49,6 +52,13 @@ impl EncoderDisplay {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ButtonImage {
+    pub id: String,
+    pub image: Arc<RgbaImage>,
+    pub tint: Option<[u8; 3]>,
+}
+
 #[derive(Debug)]
 pub enum HardwareEvent {
     EncoderTurned { encoder: EncoderId, delta: i32 },
@@ -61,6 +71,10 @@ pub enum HardwareEvent {
 
 pub trait DisplayPipeline: Send + Sync {
     fn update_encoder(&self, _encoder: EncoderId, _display: EncoderDisplay) -> Result<()> {
+        Ok(())
+    }
+
+    fn update_button_icon(&self, _index: u8, _icon: Option<ButtonImage>) -> Result<()> {
         Ok(())
     }
 }

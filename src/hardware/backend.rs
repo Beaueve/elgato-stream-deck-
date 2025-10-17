@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -8,6 +9,8 @@ use elgato_streamdeck::{
     StreamDeck, StreamDeckError, StreamDeckInput, list_devices, new_hidapi, refresh_device_list,
 };
 use tracing::{debug, error, info, warn};
+
+use image::RgbaImage;
 
 use crate::hardware::render;
 
@@ -92,6 +95,13 @@ impl EncoderDisplay {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ButtonImage {
+    pub id: String,
+    pub image: Arc<RgbaImage>,
+    pub tint: Option<[u8; 3]>,
+}
+
 #[derive(Debug)]
 pub enum HardwareEvent {
     EncoderTurned { encoder: EncoderId, delta: i32 },
@@ -104,6 +114,9 @@ pub enum HardwareEvent {
 
 pub trait DisplayPipeline: Send + Sync {
     fn update_encoder(&self, encoder: EncoderId, display: EncoderDisplay) -> Result<()>;
+    fn update_button_icon(&self, _index: u8, _icon: Option<ButtonImage>) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -116,12 +129,22 @@ enum HardwareCommand {
         encoder: EncoderId,
         display: EncoderDisplay,
     },
+    UpdateButtonIcon {
+        index: u8,
+        icon: Option<ButtonImage>,
+    },
 }
 
 impl DisplayPipeline for HardwareHandle {
     fn update_encoder(&self, encoder: EncoderId, display: EncoderDisplay) -> Result<()> {
         self.command_tx
             .send(HardwareCommand::UpdateEncoderDisplay { encoder, display })
+            .map_err(|err| anyhow!("hardware command channel closed: {err}"))
+    }
+
+    fn update_button_icon(&self, index: u8, icon: Option<ButtonImage>) -> Result<()> {
+        self.command_tx
+            .send(HardwareCommand::UpdateButtonIcon { index, icon })
             .map_err(|err| anyhow!("hardware command channel closed: {err}"))
     }
 }
@@ -197,6 +220,7 @@ fn run_backend(
         .context("failed to set device brightness")?;
 
     let mut displays: [Option<EncoderDisplay>; 4] = [None, None, None, None];
+    let mut button_icons = vec![None; selected.kind.key_count() as usize];
     render::flush_strip(&deck, &displays)?;
 
     let mut encoder_press_state = [false; 4];
@@ -204,7 +228,7 @@ fn run_backend(
 
     loop {
         // Drain command queue first to keep UI responsive
-        process_commands(&deck, &mut displays, &command_rx)?;
+        process_commands(&deck, &mut displays, &mut button_icons, &command_rx)?;
 
         match deck.read_input(Some(Duration::from_millis(25))) {
             Ok(input) => handle_input(
@@ -221,20 +245,34 @@ fn run_backend(
 fn process_commands(
     deck: &StreamDeck,
     displays: &mut [Option<EncoderDisplay>; 4],
+    button_icons: &mut [Option<ButtonImage>],
     command_rx: &Receiver<HardwareCommand>,
 ) -> Result<()> {
-    let mut changed = false;
+    let mut displays_changed = false;
+    let mut buttons_changed: Vec<u8> = Vec::new();
     while let Ok(command) = command_rx.try_recv() {
         match command {
             HardwareCommand::UpdateEncoderDisplay { encoder, display } => {
                 displays[encoder.index()] = Some(display);
-                changed = true;
+                displays_changed = true;
+            }
+            HardwareCommand::UpdateButtonIcon { index, icon } => {
+                if let Some(slot) = button_icons.get_mut(index as usize) {
+                    *slot = icon;
+                    buttons_changed.push(index);
+                } else {
+                    warn!(index, "ignoring button icon update for out-of-range index");
+                }
             }
         }
     }
 
-    if changed {
+    if displays_changed {
         render::flush_strip(deck, displays)?;
+    }
+
+    if !buttons_changed.is_empty() {
+        render::flush_buttons(deck, button_icons, &buttons_changed)?;
     }
 
     Ok(())
@@ -243,14 +281,25 @@ fn process_commands(
 fn handle_input(
     input: StreamDeckInput,
     encoder_state: &mut [bool; 4],
-    button_state: &mut [bool],
+    button_state: &mut Vec<bool>,
     event_tx: &Sender<HardwareEvent>,
 ) -> Result<()> {
     match input {
         StreamDeckInput::NoData => {}
         StreamDeckInput::ButtonStateChange(states) => {
             for (index, state) in states.iter().enumerate() {
-                let previous = button_state.get_mut(index).expect("button index in range");
+                if index >= button_state.len() {
+                    warn!(
+                        expected = button_state.len(),
+                        actual = states.len(),
+                        "expanding button state buffer to match hardware report"
+                    );
+                    button_state.resize(states.len(), false);
+                }
+                let previous = match button_state.get_mut(index) {
+                    Some(slot) => slot,
+                    None => continue,
+                };
                 if *previous != *state {
                     *previous = *state;
                     let event = if *state {
@@ -325,6 +374,9 @@ fn run_headless(
         match command {
             HardwareCommand::UpdateEncoderDisplay { .. } => {
                 // Ignore display updates while headless
+            }
+            HardwareCommand::UpdateButtonIcon { .. } => {
+                // Ignore button icon updates while headless
             }
         }
     }

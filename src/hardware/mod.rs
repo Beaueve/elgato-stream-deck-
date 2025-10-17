@@ -4,6 +4,6 @@ mod backend;
 mod render;
 
 pub use backend::{
-    DisplayPipeline, EncoderDisplay, EncoderId, HardwareConfig, HardwareEvent, HardwareHandle,
-    start,
+    ButtonImage, DisplayPipeline, EncoderDisplay, EncoderId, HardwareConfig, HardwareEvent,
+    HardwareHandle, start,
 };

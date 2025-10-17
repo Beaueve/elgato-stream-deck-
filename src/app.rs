@@ -5,18 +5,21 @@ use crossbeam_channel::Receiver;
 use tracing::{info, warn};
 
 use crate::controls::{
-    BrightnessController, EncoderController, Tickable, TimerController, VolumeController,
+    AudioToggleConfig, AudioToggleController, BrightnessController, EncoderController, Tickable,
+    TimerController, VolumeController,
 };
 use crate::hardware::{
     EncoderId, HardwareConfig, HardwareEvent, HardwareHandle, start as start_hardware,
 };
 use crate::system::audio::PulseAudioBackend;
+use crate::system::audio_switch::PulseAudioSwitch;
 use crate::system::brightness::DdcutilBackend;
 
 pub struct App {
     volume: VolumeController<PulseAudioBackend, HardwareHandle>,
     brightness: BrightnessController<DdcutilBackend, HardwareHandle>,
     timer: TimerController<HardwareHandle>,
+    audio_toggle: Option<AudioToggleController<PulseAudioSwitch, HardwareHandle>>,
     events: Receiver<HardwareEvent>,
 }
 
@@ -102,10 +105,29 @@ impl App {
             config.timer_default_secs,
         )?;
 
+        let audio_toggle = match AudioToggleConfig::load_default() {
+            Ok(Some(toggle_config)) => match AudioToggleController::with_default_backend(
+                toggle_config,
+                hardware_handle.clone(),
+            ) {
+                Ok(controller) => Some(controller),
+                Err(err) => {
+                    warn!(error = %err, "failed to initialise audio output toggle");
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(err) => {
+                warn!(error = %err, "failed to load audio toggle configuration");
+                None
+            }
+        };
+
         Ok(Self {
             volume,
             brightness,
             timer,
+            audio_toggle,
             events,
         })
     }
@@ -139,14 +161,8 @@ impl App {
             HardwareEvent::EncoderTurned { encoder, delta } => self.handle_turn(encoder, delta),
             HardwareEvent::EncoderPressed { encoder } => self.handle_press(encoder),
             HardwareEvent::EncoderReleased { encoder } => self.handle_release(encoder),
-            HardwareEvent::ButtonPressed(index) => {
-                info!(index, "button pressed (unused)");
-                Ok(())
-            }
-            HardwareEvent::ButtonReleased(index) => {
-                info!(index, "button released (unused)");
-                Ok(())
-            }
+            HardwareEvent::ButtonPressed(index) => self.handle_button_press(index),
+            HardwareEvent::ButtonReleased(_) => Ok(()),
             HardwareEvent::Touch => Ok(()),
         }
     }
@@ -179,5 +195,21 @@ impl App {
             EncoderId::Three => self.timer.on_release(),
             EncoderId::Four => Ok(()),
         }
+    }
+
+    fn handle_button_press(&mut self, index: u8) -> Result<()> {
+        let mut handled = false;
+        if let Some(toggle) = self.audio_toggle.as_mut() {
+            if index == toggle.button_index() {
+                toggle.on_button_pressed(index)?;
+                handled = true;
+            }
+        }
+
+        if !handled {
+            info!(index, "button pressed (unused)");
+        }
+
+        Ok(())
     }
 }

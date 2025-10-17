@@ -1,11 +1,13 @@
 mod font;
 
+use std::borrow::Cow;
+
 use anyhow::{Context, Result};
 use elgato_streamdeck::StreamDeck;
 use elgato_streamdeck::images::ImageRect;
-use image::{DynamicImage, Rgb, RgbImage};
+use image::{DynamicImage, Rgb, RgbImage, RgbaImage, imageops::FilterType};
 
-use crate::hardware::backend::EncoderDisplay;
+use crate::hardware::backend::{ButtonImage, EncoderDisplay};
 
 const SEGMENT_WIDTH: u32 = 200;
 const SEGMENT_HEIGHT: u32 = 100;
@@ -20,11 +22,49 @@ const PLACEHOLDER_COLOR: [u8; 3] = [80, 80, 92];
 const PROGRESS_BG: [u8; 3] = [30, 35, 45];
 const PROGRESS_FG: [u8; 3] = [0, 180, 120];
 const BORDER_COLOR: [u8; 3] = [50, 55, 65];
+const KEY_BACKGROUND: [u8; 3] = [12, 14, 24];
 
 pub fn flush_strip(deck: &StreamDeck, displays: &[Option<EncoderDisplay>; 4]) -> Result<()> {
     let image = compose_strip(displays)?;
     deck.write_lcd(0, 0, &image)
         .context("failed to push LCD strip image")
+}
+
+pub fn flush_buttons(
+    deck: &StreamDeck,
+    button_icons: &[Option<ButtonImage>],
+    changed: &[u8],
+) -> Result<()> {
+    if changed.is_empty() {
+        return Ok(());
+    }
+
+    let kind = deck.kind();
+    let mut seen = vec![false; button_icons.len()];
+
+    for index in changed {
+        let idx = *index as usize;
+        if idx >= button_icons.len() {
+            continue;
+        }
+        if std::mem::replace(&mut seen[idx], true) {
+            continue;
+        }
+
+        match button_icons[idx].as_ref() {
+            Some(icon) => {
+                let image = render_button_icon(kind, icon)?;
+                deck.set_button_image(*index, image)
+                    .with_context(|| format!("failed to set button image for index {index}"))?;
+            }
+            None => {
+                deck.clear_button_image(*index)
+                    .with_context(|| format!("failed to clear button image for index {index}"))?;
+            }
+        }
+    }
+
+    deck.flush().context("failed to flush button images")
 }
 
 fn compose_strip(displays: &[Option<EncoderDisplay>; 4]) -> Result<ImageRect> {
@@ -153,6 +193,121 @@ fn draw_progress(segment: &mut RgbImage, mut progress: f32, color: Option<[u8; 3
     for y in 0..PROGRESS_HEIGHT {
         for x in 0..filled {
             segment.put_pixel(x0 + x, y0 + y, Rgb(fg));
+        }
+    }
+}
+
+fn render_button_icon(
+    kind: elgato_streamdeck::info::Kind,
+    icon: &ButtonImage,
+) -> Result<DynamicImage> {
+    use elgato_streamdeck::info::ImageFormat;
+
+    let ImageFormat { size, .. } = kind.key_image_format();
+    let width = size.0 as u32;
+    let height = size.1 as u32;
+    let mut canvas = RgbImage::from_pixel(width, height, Rgb(KEY_BACKGROUND));
+
+    let max_width = (width as f32 * 0.78).max(1.0) as u32;
+    let max_height = (height as f32 * 0.78).max(1.0) as u32;
+
+    let source = icon.image.as_ref();
+    let (target_width, target_height) =
+        scale_to_fit(source.width(), source.height(), max_width, max_height);
+
+    let resized: Cow<'_, RgbaImage> =
+        if source.width() == target_width && source.height() == target_height {
+            Cow::Borrowed(source)
+        } else {
+            Cow::Owned(image::imageops::resize(
+                source,
+                target_width.max(1),
+                target_height.max(1),
+                FilterType::Lanczos3,
+            ))
+        };
+
+    let draw_width = resized.width();
+    let draw_height = resized.height();
+    let offset_x = width.saturating_sub(draw_width) / 2;
+    let offset_y = height.saturating_sub(draw_height) / 2;
+
+    if let Some(color) = icon.tint {
+        overlay_tinted(&mut canvas, resized.as_ref(), offset_x, offset_y, color);
+    } else {
+        overlay_rgba(&mut canvas, resized.as_ref(), offset_x, offset_y);
+    }
+
+    Ok(DynamicImage::ImageRgb8(canvas))
+}
+
+fn scale_to_fit(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    if src_w == 0 || src_h == 0 || max_w == 0 || max_h == 0 {
+        return (max_w.max(1), max_h.max(1));
+    }
+
+    let width_ratio = max_w as f32 / src_w as f32;
+    let height_ratio = max_h as f32 / src_h as f32;
+    let scale = width_ratio.min(height_ratio).max(0.0);
+    let target_w = (src_w as f32 * scale).round().max(1.0) as u32;
+    let target_h = (src_h as f32 * scale).round().max(1.0) as u32;
+    (target_w.min(max_w).max(1), target_h.min(max_h).max(1))
+}
+
+fn overlay_rgba(canvas: &mut RgbImage, icon: &RgbaImage, offset_x: u32, offset_y: u32) {
+    for (y, row) in icon.rows().enumerate() {
+        for (x, pixel) in row.enumerate() {
+            let dest_x = offset_x + x as u32;
+            let dest_y = offset_y + y as u32;
+            if dest_x >= canvas.width() || dest_y >= canvas.height() {
+                continue;
+            }
+
+            let alpha = pixel[3] as f32 / 255.0;
+            if alpha <= f32::EPSILON {
+                continue;
+            }
+
+            let dst = canvas.get_pixel_mut(dest_x, dest_y);
+            for channel in 0..3 {
+                let src_c = pixel[channel] as f32;
+                let dst_c = dst[channel] as f32;
+                dst[channel] = ((src_c * alpha) + dst_c * (1.0 - alpha))
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+}
+
+fn overlay_tinted(
+    canvas: &mut RgbImage,
+    icon: &RgbaImage,
+    offset_x: u32,
+    offset_y: u32,
+    color: [u8; 3],
+) {
+    for (y, row) in icon.rows().enumerate() {
+        for (x, pixel) in row.enumerate() {
+            let dest_x = offset_x + x as u32;
+            let dest_y = offset_y + y as u32;
+            if dest_x >= canvas.width() || dest_y >= canvas.height() {
+                continue;
+            }
+
+            let alpha = pixel[3] as f32 / 255.0;
+            if alpha <= f32::EPSILON {
+                continue;
+            }
+
+            let dst = canvas.get_pixel_mut(dest_x, dest_y);
+            for channel in 0..3 {
+                let src_c = color[channel] as f32;
+                let dst_c = dst[channel] as f32;
+                dst[channel] = ((src_c * alpha) + dst_c * (1.0 - alpha))
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
         }
     }
 }

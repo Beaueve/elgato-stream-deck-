@@ -1,7 +1,9 @@
+mod audio_toggle;
 mod brightness;
 mod timer;
 mod volume;
 
+pub use audio_toggle::{AudioToggleConfig, AudioToggleController};
 pub use brightness::BrightnessController;
 pub use timer::TimerController;
 pub use volume::VolumeController;
