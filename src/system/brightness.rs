@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{Context, Result, anyhow, bail};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use tracing::warn;
+use tracing::{info, warn};
+
+use super::availability::RetryableAvailability;
 
 pub trait BrightnessBackend: Send {
     fn get_brightness(&self) -> Result<u8>;
@@ -23,11 +25,12 @@ static DDCUTIL_AVAILABLE: Lazy<bool> = Lazy::new(|| {
         .unwrap_or(false)
 });
 static WARNED_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
+const RETRY_BACKOFF_SECS: u64 = 5;
 
 pub struct DdcutilBackend {
     pub display: Option<String>,
     pub bus: Option<u8>,
-    available: Arc<AtomicBool>,
+    availability: Arc<RetryableAvailability>,
 }
 
 impl Clone for DdcutilBackend {
@@ -35,7 +38,7 @@ impl Clone for DdcutilBackend {
         Self {
             display: self.display.clone(),
             bus: self.bus,
-            available: Arc::clone(&self.available),
+            availability: Arc::clone(&self.availability),
         }
     }
 }
@@ -51,7 +54,7 @@ impl std::fmt::Debug for DdcutilBackend {
         f.debug_struct("DdcutilBackend")
             .field("display", &self.display)
             .field("bus", &self.bus)
-            .field("available", &self.available.load(Ordering::Relaxed))
+            .field("available", &self.availability.current())
             .finish()
     }
 }
@@ -61,12 +64,20 @@ impl DdcutilBackend {
         Self {
             display,
             bus,
-            available: Arc::new(AtomicBool::new(*DDCUTIL_AVAILABLE)),
+            availability: Arc::new(RetryableAvailability::new(
+                *DDCUTIL_AVAILABLE,
+                RETRY_BACKOFF_SECS,
+            )),
         }
     }
 
     pub fn is_available(&self) -> bool {
-        self.available.load(Ordering::Relaxed)
+        let (available, became_available) = self.availability.try_acquire();
+        if became_available {
+            WARNED_UNAVAILABLE.store(false, Ordering::Relaxed);
+            info!("ddcutil backend is available again; brightness encoder restored");
+        }
+        available
     }
 
     fn spawn_command(&self, command: &str, value: Option<String>) -> Result<String> {
@@ -105,11 +116,12 @@ impl DdcutilBackend {
             bail!("ddcutil exited with {code}");
         }
 
+        self.availability.mark_available();
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     fn mark_unavailable(&self, reason: impl Into<String>) {
-        if self.available.swap(false, Ordering::Relaxed) {
+        if self.availability.mark_unavailable() {
             let reason = reason.into();
             warn_backend_disabled(&reason);
         }

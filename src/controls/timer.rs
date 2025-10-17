@@ -24,8 +24,8 @@ where
     remaining: u64,
     step: u64,
     min: u64,
-   max: u64,
-   state: TimerDisplayState,
+    max: u64,
+    state: TimerDisplayState,
     finished_blink: bool,
 }
 
@@ -223,15 +223,8 @@ mod tests {
     #[test]
     fn rotation_adjusts_configuration() {
         let display = TestDisplay::default();
-        let mut controller = TimerController::new(
-            display.clone(),
-            EncoderId::Three,
-            60,
-            60,
-            3600,
-            120,
-        )
-        .unwrap();
+        let mut controller =
+            TimerController::new(display.clone(), EncoderId::Three, 60, 60, 3600, 120).unwrap();
 
         controller.on_turn(1).unwrap(); // +60s -> 03:00
         let updates = display.updates.lock().unwrap();
@@ -243,15 +236,8 @@ mod tests {
     #[test]
     fn press_starts_and_counts_down() {
         let display = TestDisplay::default();
-        let mut controller = TimerController::new(
-            display.clone(),
-            EncoderId::Three,
-            10,
-            10,
-            600,
-            100,
-        )
-        .unwrap();
+        let mut controller =
+            TimerController::new(display.clone(), EncoderId::Three, 10, 10, 600, 100).unwrap();
 
         controller.on_press().unwrap(); // start
         controller.on_tick().unwrap(); // first second
@@ -268,15 +254,8 @@ mod tests {
     #[test]
     fn pressing_while_running_resets_without_restarting() {
         let display = TestDisplay::default();
-        let mut controller = TimerController::new(
-            display.clone(),
-            EncoderId::Three,
-            60,
-            60,
-            3600,
-            120,
-        )
-        .unwrap();
+        let mut controller =
+            TimerController::new(display.clone(), EncoderId::Three, 60, 60, 3600, 120).unwrap();
 
         controller.on_press().unwrap();
         controller.on_tick().unwrap();
@@ -295,15 +274,8 @@ mod tests {
     #[test]
     fn progress_bar_turns_blue_under_ten_percent() {
         let display = TestDisplay::default();
-        let mut controller = TimerController::new(
-            display.clone(),
-            EncoderId::Three,
-            5,
-            5,
-            600,
-            100,
-        )
-        .unwrap();
+        let mut controller =
+            TimerController::new(display.clone(), EncoderId::Three, 5, 5, 600, 100).unwrap();
 
         controller.on_press().unwrap();
         for _ in 0..90 {
@@ -318,25 +290,19 @@ mod tests {
             .expect("blue update present");
 
         assert_eq!(blue.status.as_deref(), Some("run"));
-        assert!(blue
-            .progress
-            .map(|p| (p - 0.1).abs() < f32::EPSILON)
-            .unwrap_or(false));
+        assert!(
+            blue.progress
+                .map(|p| (p - 0.1).abs() < f32::EPSILON)
+                .unwrap_or(false)
+        );
         assert_eq!(blue.progress_color, Some(PROGRESS_ALERT_COLOR));
     }
 
     #[test]
     fn pressing_after_finish_resets_without_restarting() {
         let display = TestDisplay::default();
-        let mut controller = TimerController::new(
-            display.clone(),
-            EncoderId::Three,
-            1,
-            1,
-            600,
-            3,
-        )
-        .unwrap();
+        let mut controller =
+            TimerController::new(display.clone(), EncoderId::Three, 1, 1, 600, 3).unwrap();
 
         controller.on_press().unwrap();
         for _ in 0..3 {
@@ -356,15 +322,8 @@ mod tests {
     #[test]
     fn finished_timer_value_blinks_blue() {
         let display = TestDisplay::default();
-        let mut controller = TimerController::new(
-            display.clone(),
-            EncoderId::Three,
-            1,
-            1,
-            600,
-            2,
-        )
-        .unwrap();
+        let mut controller =
+            TimerController::new(display.clone(), EncoderId::Three, 1, 1, 600, 2).unwrap();
 
         controller.on_press().unwrap();
         controller.on_tick().unwrap(); // remaining -> 1

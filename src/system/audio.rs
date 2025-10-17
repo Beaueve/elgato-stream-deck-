@@ -5,9 +5,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{Context, Result, anyhow, bail};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use tracing::warn;
+use tracing::{info, warn};
+
+use super::availability::RetryableAvailability;
 
 const DEFAULT_SINK: &str = "@DEFAULT_SINK@";
+const RETRY_BACKOFF_SECS: u64 = 5;
 static PACTL_AVAILABLE: Lazy<bool> = Lazy::new(|| {
     Command::new("pactl")
         .arg("--version")
@@ -29,14 +32,14 @@ pub trait AudioBackend: Send {
 
 pub struct PulseAudioBackend {
     sink: String,
-    available: Arc<AtomicBool>,
+    availability: Arc<RetryableAvailability>,
 }
 
 impl Clone for PulseAudioBackend {
     fn clone(&self) -> Self {
         Self {
             sink: self.sink.clone(),
-            available: Arc::clone(&self.available),
+            availability: Arc::clone(&self.availability),
         }
     }
 }
@@ -45,7 +48,10 @@ impl Default for PulseAudioBackend {
     fn default() -> Self {
         Self {
             sink: DEFAULT_SINK.to_string(),
-            available: Arc::new(AtomicBool::new(*PACTL_AVAILABLE)),
+            availability: Arc::new(RetryableAvailability::new(
+                *PACTL_AVAILABLE,
+                RETRY_BACKOFF_SECS,
+            )),
         }
     }
 }
@@ -54,12 +60,20 @@ impl PulseAudioBackend {
     pub fn new(sink: impl Into<String>) -> Self {
         Self {
             sink: sink.into(),
-            available: Arc::new(AtomicBool::new(*PACTL_AVAILABLE)),
+            availability: Arc::new(RetryableAvailability::new(
+                *PACTL_AVAILABLE,
+                RETRY_BACKOFF_SECS,
+            )),
         }
     }
 
     pub fn is_available(&self) -> bool {
-        self.available.load(Ordering::Relaxed)
+        let (available, became_available) = self.availability.try_acquire();
+        if became_available {
+            WARNED_UNAVAILABLE.store(false, Ordering::Relaxed);
+            info!("PulseAudio backend is available again; volume encoder restored");
+        }
+        available
     }
 
     fn run_pactl(&self, args: &[String]) -> Result<String> {
@@ -81,6 +95,7 @@ impl PulseAudioBackend {
             bail!(message);
         }
 
+        self.availability.mark_available();
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
@@ -89,7 +104,7 @@ impl PulseAudioBackend {
     }
 
     fn mark_unavailable(&self, reason: impl Into<String>) {
-        if self.available.swap(false, Ordering::Relaxed) {
+        if self.availability.mark_unavailable() {
             let reason = reason.into();
             warn_backend_disabled_with_reason(&reason);
         }
@@ -100,7 +115,7 @@ impl std::fmt::Debug for PulseAudioBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PulseAudioBackend")
             .field("sink", &self.sink)
-            .field("available", &self.available.load(Ordering::Relaxed))
+            .field("available", &self.availability.current())
             .finish()
     }
 }

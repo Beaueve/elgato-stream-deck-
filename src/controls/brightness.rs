@@ -1,7 +1,7 @@
 use std::thread;
 
 use anyhow::{Result, anyhow};
-use crossbeam_channel::{bounded, Receiver, TryRecvError};
+use crossbeam_channel::{Receiver, TryRecvError, bounded};
 use tracing::warn;
 
 use crate::hardware::{DisplayPipeline, EncoderDisplay, EncoderId};
@@ -284,12 +284,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controls::Tickable;
     use crate::hardware::DisplayPipeline;
     use crate::system::brightness::tests::{MockBrightnessBackend, MockBrightnessState};
-    use crate::controls::Tickable;
     use anyhow::Result;
-    use std::thread;
     use std::sync::{Arc, Mutex};
+    use std::thread;
     use std::time::Duration;
 
     #[derive(Clone, Default)]
@@ -304,9 +304,7 @@ mod tests {
         }
     }
 
-    fn wait_for_apply(
-        controller: &mut BrightnessController<MockBrightnessBackend, TestDisplay>,
-    ) {
+    fn wait_for_apply(controller: &mut BrightnessController<MockBrightnessBackend, TestDisplay>) {
         for _ in 0..20 {
             controller.on_tick().unwrap();
             thread::sleep(Duration::from_millis(5));

@@ -109,12 +109,7 @@ fn draw_title(segment: &mut RgbImage, title: &str) {
     );
 }
 
-fn draw_value(
-    segment: &mut RgbImage,
-    value: &str,
-    has_status: bool,
-    color: Option<[u8; 3]>,
-) {
+fn draw_value(segment: &mut RgbImage, value: &str, has_status: bool, color: Option<[u8; 3]>) {
     let scale = 4;
     let (text_width, text_height) = font::measure_text(value, scale);
     let mut y_center = (SEGMENT_HEIGHT / 2).saturating_sub(text_height / 2);
