@@ -20,6 +20,8 @@ pub struct App {
     brightness: BrightnessController<DdcutilBackend, HardwareHandle>,
     timer: TimerController<HardwareHandle>,
     audio_toggle: Option<AudioToggleController<PulseAudioSwitch, HardwareHandle>>,
+    hardware: HardwareHandle,
+    shutdown: Option<Receiver<()>>,
     events: Receiver<HardwareEvent>,
 }
 
@@ -128,32 +130,65 @@ impl App {
             brightness,
             timer,
             audio_toggle,
+            hardware: hardware_handle,
+            shutdown: None,
             events,
         })
     }
 
     pub fn run(&mut self) -> Result<()> {
         let ticker = crossbeam_channel::tick(Duration::from_secs(1));
-        loop {
-            crossbeam_channel::select! {
-                recv(self.events) -> event => match event {
-                    Ok(event) => self.handle_event(event)?,
-                    Err(_) => {
-                        warn!("hardware event channel closed");
-                        break;
+        let shutdown_rx = self.shutdown.clone();
+        let result = (|| -> Result<()> {
+            loop {
+                if let Some(ref shutdown) = shutdown_rx {
+                    crossbeam_channel::select! {
+                        recv(self.events) -> event => match event {
+                            Ok(event) => self.handle_event(event)?,
+                            Err(_) => {
+                                warn!("hardware event channel closed");
+                                break Ok(());
+                            }
+                        },
+                        recv(ticker) -> _ => {
+                            if let Err(err) = self.timer.on_tick() {
+                                warn!(error = %err, "timer tick failed");
+                            }
+                            if let Err(err) = self.brightness.on_tick() {
+                                warn!(error = %err, "brightness tick failed");
+                            }
+                        },
+                        recv(shutdown) -> _ => {
+                            break Ok(());
+                        }
                     }
-                },
-                recv(ticker) -> _ => {
-                    if let Err(err) = self.timer.on_tick() {
-                        warn!(error = %err, "timer tick failed");
-                    }
-                    if let Err(err) = self.brightness.on_tick() {
-                        warn!(error = %err, "brightness tick failed");
+                } else {
+                    crossbeam_channel::select! {
+                        recv(self.events) -> event => match event {
+                            Ok(event) => self.handle_event(event)?,
+                            Err(_) => {
+                                warn!("hardware event channel closed");
+                                break Ok(());
+                            }
+                        },
+                        recv(ticker) -> _ => {
+                            if let Err(err) = self.timer.on_tick() {
+                                warn!(error = %err, "timer tick failed");
+                            }
+                            if let Err(err) = self.brightness.on_tick() {
+                                warn!(error = %err, "brightness tick failed");
+                            }
+                        }
                     }
                 }
             }
+        })();
+
+        if let Err(err) = self.hardware.clear_all_displays() {
+            warn!(error = %err, "failed to clear stream deck displays");
         }
-        Ok(())
+
+        result
     }
 
     fn handle_event(&mut self, event: HardwareEvent) -> Result<()> {
@@ -211,5 +246,21 @@ impl App {
         }
 
         Ok(())
+    }
+
+    pub fn set_shutdown_channel(&mut self, shutdown: Receiver<()>) {
+        self.shutdown = Some(shutdown);
+    }
+
+    pub fn hardware_handle(&self) -> HardwareHandle {
+        self.hardware.clone()
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Err(err) = self.hardware.clear_all_displays() {
+            warn!(error = %err, "failed to clear stream deck displays on drop");
+        }
     }
 }

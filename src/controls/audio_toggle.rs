@@ -551,4 +551,10 @@ mod tests {
         assert!(!updates.is_empty());
         assert_eq!(updates.last().unwrap().0, 2);
     }
+
+    #[test]
+    fn material_icons_are_tinted() {
+        let icon = load_material_icon(MaterialIcon::Monitor).unwrap();
+        assert_eq!(icon.tint, Some(MATERIAL_ICON_TINT));
+    }
 }

@@ -1,6 +1,7 @@
 mod font;
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use elgato_streamdeck::StreamDeck;
@@ -23,6 +24,7 @@ const PROGRESS_BG: [u8; 3] = [30, 35, 45];
 const PROGRESS_FG: [u8; 3] = [0, 180, 120];
 const BORDER_COLOR: [u8; 3] = [50, 55, 65];
 const KEY_BACKGROUND: [u8; 3] = [12, 14, 24];
+const KEY_PLACEHOLDER_COLOR: [u8; 3] = [120, 130, 150];
 
 pub fn flush_strip(deck: &StreamDeck, displays: &[Option<EncoderDisplay>; 4]) -> Result<()> {
     let image = compose_strip(displays)?;
@@ -65,6 +67,36 @@ pub fn flush_buttons(
     }
 
     deck.flush().context("failed to flush button images")
+}
+
+pub fn clear_buttons(deck: &StreamDeck) -> Result<()> {
+    deck.clear_all_button_images()
+        .context("failed to clear button images")?;
+    deck.flush()
+        .context("failed to flush cleared button images")
+}
+
+pub fn initialize_button_placeholders(
+    deck: &StreamDeck,
+    button_icons: &mut [Option<ButtonImage>],
+) -> Result<()> {
+    if button_icons.is_empty() {
+        return Ok(());
+    }
+
+    let placeholder = placeholder_image(deck.kind())?;
+    let template = ButtonImage {
+        id: "placeholder".into(),
+        image: placeholder,
+        tint: None,
+    };
+
+    for slot in button_icons.iter_mut() {
+        *slot = Some(template.clone());
+    }
+
+    let changed: Vec<u8> = (0..button_icons.len()).map(|index| index as u8).collect();
+    flush_buttons(deck, button_icons, &changed)
 }
 
 fn compose_strip(displays: &[Option<EncoderDisplay>; 4]) -> Result<ImageRect> {
@@ -239,6 +271,45 @@ fn render_button_icon(
     }
 
     Ok(DynamicImage::ImageRgb8(canvas))
+}
+
+pub fn clear_strip(deck: &StreamDeck) -> Result<()> {
+    let kind = deck.kind();
+    let (width, height) = kind
+        .lcd_strip_size()
+        .map(|(w, h)| (w as u32, h as u32))
+        .unwrap_or((SEGMENT_WIDTH * 4, SEGMENT_HEIGHT));
+
+    let canvas = RgbImage::from_pixel(width, height, Rgb([0, 0, 0]));
+    let dynamic = DynamicImage::ImageRgb8(canvas);
+    let rect = ImageRect::from_image(dynamic).context("failed to encode blank LCD strip")?;
+
+    deck.write_lcd(0, 0, &rect)
+        .context("failed to clear LCD strip")
+}
+
+fn placeholder_image(kind: elgato_streamdeck::info::Kind) -> Result<Arc<RgbaImage>> {
+    use elgato_streamdeck::info::ImageFormat;
+
+    let ImageFormat { size, .. } = kind.key_image_format();
+    let (width, height) = (size.0 as u32, size.1 as u32);
+    let mut canvas = RgbImage::from_pixel(width, height, Rgb(KEY_BACKGROUND));
+
+    let text = "EMPT";
+    let mut scale = 6;
+    loop {
+        let (tw, th) = font::measure_text(text, scale);
+        if tw <= width.saturating_sub(8) || scale == 1 {
+            let x = width.saturating_sub(tw) / 2;
+            let y = height.saturating_sub(th) / 2;
+            font::draw_text(&mut canvas, text, x, y, scale, KEY_PLACEHOLDER_COLOR);
+            break;
+        }
+        scale = scale.saturating_sub(1).max(1);
+    }
+
+    let rgba = DynamicImage::ImageRgb8(canvas).to_rgba8();
+    Ok(Arc::new(rgba))
 }
 
 fn scale_to_fit(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {

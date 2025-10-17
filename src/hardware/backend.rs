@@ -133,6 +133,7 @@ enum HardwareCommand {
         index: u8,
         icon: Option<ButtonImage>,
     },
+    ResetDisplays,
 }
 
 impl DisplayPipeline for HardwareHandle {
@@ -145,6 +146,14 @@ impl DisplayPipeline for HardwareHandle {
     fn update_button_icon(&self, index: u8, icon: Option<ButtonImage>) -> Result<()> {
         self.command_tx
             .send(HardwareCommand::UpdateButtonIcon { index, icon })
+            .map_err(|err| anyhow!("hardware command channel closed: {err}"))
+    }
+}
+
+impl HardwareHandle {
+    pub fn clear_all_displays(&self) -> Result<()> {
+        self.command_tx
+            .send(HardwareCommand::ResetDisplays)
             .map_err(|err| anyhow!("hardware command channel closed: {err}"))
     }
 }
@@ -222,6 +231,7 @@ fn run_backend(
     let mut displays: [Option<EncoderDisplay>; 4] = [None, None, None, None];
     let mut button_icons = vec![None; selected.kind.key_count() as usize];
     render::flush_strip(&deck, &displays)?;
+    render::initialize_button_placeholders(&deck, &mut button_icons)?;
 
     let mut encoder_press_state = [false; 4];
     let mut button_press_state = vec![false; selected.kind.key_count() as usize];
@@ -263,6 +273,19 @@ fn process_commands(
                 } else {
                     warn!(index, "ignoring button icon update for out-of-range index");
                 }
+            }
+            HardwareCommand::ResetDisplays => {
+                for display in displays.iter_mut() {
+                    *display = None;
+                }
+                for icon in button_icons.iter_mut() {
+                    *icon = None;
+                }
+                render::clear_buttons(deck)?;
+                render::clear_strip(deck)?;
+                displays_changed = false;
+                buttons_changed.clear();
+                continue;
             }
         }
     }
@@ -377,6 +400,9 @@ fn run_headless(
             }
             HardwareCommand::UpdateButtonIcon { .. } => {
                 // Ignore button icon updates while headless
+            }
+            HardwareCommand::ResetDisplays => {
+                // Nothing to do in headless mode
             }
         }
     }

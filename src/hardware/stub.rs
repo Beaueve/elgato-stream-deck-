@@ -84,6 +84,12 @@ pub struct HardwareHandle;
 
 impl DisplayPipeline for HardwareHandle {}
 
+impl HardwareHandle {
+    pub fn clear_all_displays(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
 pub fn start(_: HardwareConfig) -> Result<(HardwareHandle, Receiver<HardwareEvent>)> {
     Err(anyhow!(
         "hardware support disabled. Enable the `hardware` feature to connect to the Stream Deck."
