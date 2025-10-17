@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -17,14 +18,6 @@ use usvg::{Options as UsvgOptions, Tree as UsvgTree};
 use crate::hardware::{ButtonImage, DisplayPipeline};
 use crate::system::audio_switch::{AudioSwitchBackend, PulseAudioSwitch, SinkInfo, SinkSelector};
 
-const DEFAULT_CONFIG_PATHS: &[&str] = &[
-    "audio_toggle.json",
-    "config/audio_toggle.json",
-    "target/debug/audio_toggle.json",
-    "target/release/audio_toggle.json",
-];
-const MATERIAL_MONITOR_ICON: &str = "assets/icons/material/monitor.svg";
-const MATERIAL_HEADPHONES_ICON: &str = "assets/icons/material/headphones.svg";
 const MATERIAL_ICON_TINT: [u8; 3] = [220, 235, 255];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32,6 +25,12 @@ pub struct AudioToggleConfig {
     #[serde(default = "default_button_index")]
     pub button_index: u8,
     pub outputs: [AudioOutputConfig; 2],
+}
+
+#[derive(Debug, Clone)]
+pub struct AudioToggleSettings {
+    pub config: AudioToggleConfig,
+    pub config_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,11 +63,14 @@ fn default_button_index() -> u8 {
 }
 
 impl AudioToggleConfig {
-    pub fn load_default() -> Result<Option<Self>> {
-        for candidate in DEFAULT_CONFIG_PATHS {
-            let path = Path::new(candidate);
+    pub fn load_default() -> Result<Option<AudioToggleSettings>> {
+        for path in default_config_paths() {
             if path.exists() {
-                return Self::from_path(path).map(Some);
+                let config = Self::from_path(&path)?;
+                return Ok(Some(AudioToggleSettings {
+                    config,
+                    config_path: Some(path),
+                }));
             }
         }
         Ok(None)
@@ -109,12 +111,17 @@ where
     B: AudioSwitchBackend,
     H: DisplayPipeline,
 {
-    pub fn new(config: AudioToggleConfig, backend: B, hardware: H) -> Result<Self> {
+    fn new(
+        config: AudioToggleConfig,
+        backend: B,
+        hardware: H,
+        icon_paths: &IconPaths,
+    ) -> Result<Self> {
         let outputs = config
             .outputs
             .iter()
             .enumerate()
-            .map(|(index, entry)| OutputProfile::from_config(entry, index))
+            .map(|(index, entry)| OutputProfile::from_config(entry, index, icon_paths))
             .collect::<Result<Vec<_>>>()?;
 
         let outputs: [OutputProfile; 2] = outputs
@@ -204,21 +211,31 @@ where
     H: DisplayPipeline,
 {
     pub fn with_default_backend(
-        config: AudioToggleConfig,
+        settings: AudioToggleSettings,
         hardware: H,
     ) -> Result<AudioToggleController<PulseAudioSwitch, H>> {
-        AudioToggleController::new(config, PulseAudioSwitch::new(), hardware)
+        let icon_paths = IconPaths::new(settings.config_path.as_deref());
+        AudioToggleController::new(
+            settings.config,
+            PulseAudioSwitch::new(),
+            hardware,
+            &icon_paths,
+        )
     }
 }
 
 impl OutputProfile {
-    fn from_config(config: &AudioOutputConfig, index: usize) -> Result<Self> {
+    fn from_config(
+        config: &AudioOutputConfig,
+        index: usize,
+        icon_paths: &IconPaths,
+    ) -> Result<Self> {
         let selector = config.selector()?;
         let fallback_icon = match index {
             0 => MaterialIcon::Monitor,
             _ => MaterialIcon::Headphones,
         };
-        let icon = load_icon_from_config(config.icon.as_ref(), fallback_icon)?;
+        let icon = load_icon_from_config(config.icon.as_ref(), fallback_icon, icon_paths)?;
         let label = config.label();
         Ok(Self {
             selector,
@@ -250,34 +267,133 @@ impl AudioOutputConfig {
     }
 }
 
+fn default_config_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(explicit) = env::var_os("STREAMDECK_CTRL_CONFIG") {
+        paths.push(PathBuf::from(explicit));
+    }
+
+    let candidate_names = ["stream-deck.json", "audio_toggle.json"];
+
+    if let Some(xdg) = env::var_os("XDG_CONFIG_HOME") {
+        let base = PathBuf::from(xdg).join("streamdeck_ctrl");
+        for name in &candidate_names {
+            paths.push(base.join(name));
+        }
+    }
+
+    if let Some(home) = env::var_os("HOME") {
+        let base = PathBuf::from(home).join(".config/streamdeck_ctrl");
+        for name in &candidate_names {
+            paths.push(base.join(name));
+        }
+    }
+
+    for name in &candidate_names {
+        paths.push(PathBuf::from(name));
+        paths.push(PathBuf::from("config").join(name));
+        paths.push(PathBuf::from("target/debug").join(name));
+        paths.push(PathBuf::from("target/release").join(name));
+        // legacy filenames kept for backwards compatibility
+        let legacy = match *name {
+            "stream-deck.json" => "audio_toggle.json",
+            other => other,
+        };
+        paths.push(PathBuf::from("target/debug").join(legacy));
+        paths.push(PathBuf::from("target/release").join(legacy));
+    }
+
+    paths
+}
+
 static ICON_CACHE: Lazy<Mutex<HashMap<PathBuf, Arc<RgbaImage>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-fn load_icon_from_config(icon: Option<&IconConfig>, fallback: MaterialIcon) -> Result<ButtonImage> {
+fn load_icon_from_config(
+    icon: Option<&IconConfig>,
+    fallback: MaterialIcon,
+    paths: &IconPaths,
+) -> Result<ButtonImage> {
     match icon {
-        Some(IconConfig::Material { material }) => load_material_icon(*material),
-        Some(IconConfig::Path { path }) => load_icon_from_path(Path::new(path), path, None),
-        Some(IconConfig::Simple(material)) => load_material_icon(*material),
-        None => load_material_icon(fallback),
+        Some(IconConfig::Material { material }) => load_material_icon(*material, paths),
+        Some(IconConfig::Path { path }) => load_icon_from_path(Path::new(path), path, None, paths),
+        Some(IconConfig::Simple(material)) => load_material_icon(*material, paths),
+        None => load_material_icon(fallback, paths),
     }
 }
 
-fn load_material_icon(icon: MaterialIcon) -> Result<ButtonImage> {
-    let (path, id) = match icon {
-        MaterialIcon::Monitor => (MATERIAL_MONITOR_ICON, "monitor"),
-        MaterialIcon::Headphones => (MATERIAL_HEADPHONES_ICON, "headphones"),
+fn load_material_icon(icon: MaterialIcon, paths: &IconPaths) -> Result<ButtonImage> {
+    let (filename, id) = match icon {
+        MaterialIcon::Monitor => ("monitor.svg", "monitor"),
+        MaterialIcon::Headphones => ("headphones.svg", "headphones"),
     };
-    load_icon_from_path(Path::new(path), id, Some(MATERIAL_ICON_TINT))
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(root) = &paths.assets_root {
+        candidates.push(root.join(filename));
+    }
+    if let Some(base) = &paths.base_dir {
+        candidates.push(base.join(filename));
+    }
+    candidates.push(PathBuf::from("assets/icons/material").join(filename));
+
+    let mut last_error: Option<anyhow::Error> = None;
+    for candidate in candidates {
+        if candidate.exists() {
+            match load_icon_from_resolved(&candidate, id.to_string(), Some(MATERIAL_ICON_TINT)) {
+                Ok(icon) => return Ok(icon),
+                Err(err) => last_error = Some(err),
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        anyhow!(
+            "material icon {} not found; expected it in assets directory",
+            filename
+        )
+    }))
 }
 
 fn load_icon_from_path(
     path: &Path,
     id_hint: impl Into<String>,
     tint: Option<[u8; 3]>,
+    paths: &IconPaths,
 ) -> Result<ButtonImage> {
-    let canonical = path
-        .canonicalize()
-        .with_context(|| format!("icon not found at {}", path.display()))?;
+    let id = id_hint.into();
+    let resolved = resolve_icon_path(path, paths)
+        .ok_or_else(|| anyhow!("icon not found at {}", path.display()))?;
+    load_icon_from_resolved(&resolved, id, tint)
+}
+
+fn resolve_icon_path(path: &Path, paths: &IconPaths) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if path.is_absolute() {
+        candidates.push(path.to_path_buf());
+    } else {
+        if let Some(base) = &paths.base_dir {
+            candidates.push(base.join(path));
+        }
+        if let Some(assets) = &paths.assets_root {
+            candidates.push(assets.join(path));
+        }
+        candidates.push(PathBuf::from(path));
+    }
+
+    for candidate in candidates {
+        if let Ok(canonical) = candidate.canonicalize() {
+            return Some(canonical);
+        } else if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn load_icon_from_resolved(path: &Path, id: String, tint: Option<[u8; 3]>) -> Result<ButtonImage> {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
     if let Some(image) = ICON_CACHE
         .lock()
@@ -285,11 +401,7 @@ fn load_icon_from_path(
         .get(&canonical)
         .map(Arc::clone)
     {
-        return Ok(ButtonImage {
-            id: id_hint.into(),
-            image,
-            tint,
-        });
+        return Ok(ButtonImage { id, image, tint });
     }
 
     let decoded = decode_icon(&canonical)?;
@@ -299,11 +411,7 @@ fn load_icon_from_path(
         .expect("icon cache mutex poisoned")
         .insert(canonical, Arc::clone(&image));
 
-    Ok(ButtonImage {
-        id: id_hint.into(),
-        image,
-        tint,
-    })
+    Ok(ButtonImage { id, image, tint })
 }
 
 fn decode_icon(path: &Path) -> Result<RgbaImage> {
@@ -385,6 +493,8 @@ mod tests {
     use super::*;
 
     use crate::hardware::{ButtonImage, EncoderDisplay, EncoderId};
+    use once_cell::sync::Lazy;
+    use std::env;
     use std::sync::{Arc, Mutex};
 
     struct RecordingHardware {
@@ -495,6 +605,48 @@ mod tests {
         assert_eq!(config.outputs[0].description.as_deref(), Some("Output A"));
     }
 
+    static ENV_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    #[test]
+    fn load_default_prefers_env_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("stream-deck.json");
+        fs::write(
+            &config_path,
+            r#"{
+            "button_index": 0,
+            "outputs": [
+                { "description": "Env Monitor" },
+                { "description": "Env Headphones" }
+            ]
+        }"#,
+        )
+        .unwrap();
+
+        let _guard = ENV_GUARD.lock().unwrap();
+        let previous = env::var_os("STREAMDECK_CTRL_CONFIG");
+        unsafe {
+            // UNSAFETY: modifying process-wide environment for duration of test
+            env::set_var("STREAMDECK_CTRL_CONFIG", &config_path);
+        }
+
+        let settings = AudioToggleConfig::load_default().unwrap().unwrap();
+        assert_eq!(
+            settings.config.outputs[0].description.as_deref(),
+            Some("Env Monitor")
+        );
+
+        if let Some(value) = previous {
+            unsafe {
+                env::set_var("STREAMDECK_CTRL_CONFIG", value);
+            }
+        } else {
+            unsafe {
+                env::remove_var("STREAMDECK_CTRL_CONFIG");
+            }
+        }
+    }
+
     #[test]
     fn controller_initialises_with_current_sink() {
         let config = sample_config();
@@ -517,7 +669,9 @@ mod tests {
         };
 
         let hardware = RecordingHardware::new();
-        let controller = AudioToggleController::new(config, backend, Arc::new(hardware)).unwrap();
+        let icon_paths = IconPaths::new(None);
+        let controller =
+            AudioToggleController::new(config, backend, Arc::new(hardware), &icon_paths).unwrap();
         assert_eq!(controller.active_index(), 1);
     }
 
@@ -543,8 +697,10 @@ mod tests {
         };
 
         let hardware = Arc::new(RecordingHardware::new());
+        let icon_paths = IconPaths::new(None);
         let mut controller =
-            AudioToggleController::new(config, backend, Arc::clone(&hardware)).unwrap();
+            AudioToggleController::new(config, backend, Arc::clone(&hardware), &icon_paths)
+                .unwrap();
         controller.on_button_pressed(2).unwrap();
         assert_eq!(controller.active_index(), 1);
         let updates = hardware.updates();
@@ -554,7 +710,27 @@ mod tests {
 
     #[test]
     fn material_icons_are_tinted() {
-        let icon = load_material_icon(MaterialIcon::Monitor).unwrap();
+        let icon_paths = IconPaths::new(None);
+        let icon = load_material_icon(MaterialIcon::Monitor, &icon_paths).unwrap();
         assert_eq!(icon.tint, Some(MATERIAL_ICON_TINT));
+    }
+}
+#[derive(Clone, Debug)]
+struct IconPaths {
+    base_dir: Option<PathBuf>,
+    assets_root: Option<PathBuf>,
+}
+
+impl IconPaths {
+    fn new(config_path: Option<&Path>) -> Self {
+        let env_assets = env::var_os("STREAMDECK_CTRL_ASSETS").map(PathBuf::from);
+        let base_dir = config_path
+            .and_then(|path| path.parent())
+            .map(|parent| parent.to_path_buf());
+        let assets_root = env_assets.or_else(|| base_dir.as_ref().map(|dir| dir.join("assets")));
+        Self {
+            base_dir,
+            assets_root,
+        }
     }
 }

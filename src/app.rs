@@ -108,16 +108,16 @@ impl App {
         )?;
 
         let audio_toggle = match AudioToggleConfig::load_default() {
-            Ok(Some(toggle_config)) => match AudioToggleController::with_default_backend(
-                toggle_config,
-                hardware_handle.clone(),
-            ) {
-                Ok(controller) => Some(controller),
-                Err(err) => {
-                    warn!(error = %err, "failed to initialise audio output toggle");
-                    None
+            Ok(Some(settings)) => {
+                match AudioToggleController::with_default_backend(settings, hardware_handle.clone())
+                {
+                    Ok(controller) => Some(controller),
+                    Err(err) => {
+                        warn!(error = %err, "failed to initialise audio output toggle");
+                        None
+                    }
                 }
-            },
+            }
             Ok(None) => None,
             Err(err) => {
                 warn!(error = %err, "failed to load audio toggle configuration");
@@ -237,7 +237,9 @@ impl App {
         if let Some(toggle) = self.audio_toggle.as_mut() {
             if index == toggle.button_index() {
                 toggle.on_button_pressed(index)?;
-                self.volume.sync()?;
+                if let Err(err) = self.volume.sync() {
+                    warn!(error = %err, "failed to refresh volume after audio sink switch");
+                }
                 handled = true;
             }
         }
