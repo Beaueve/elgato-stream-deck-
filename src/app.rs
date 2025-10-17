@@ -4,9 +4,10 @@ use anyhow::Result;
 use crossbeam_channel::Receiver;
 use tracing::{info, warn};
 
+use crate::config;
 use crate::controls::{
-    AudioToggleConfig, AudioToggleController, BrightnessController, EncoderController, Tickable,
-    TimerController, VolumeController,
+    AudioToggleController, AudioToggleSettings, BrightnessController, EncoderController,
+    LauncherController, Tickable, TimerController, VolumeController,
 };
 use crate::hardware::{
     EncoderId, HardwareConfig, HardwareEvent, HardwareHandle, start as start_hardware,
@@ -20,6 +21,7 @@ pub struct App {
     brightness: BrightnessController<DdcutilBackend, HardwareHandle>,
     timer: TimerController<HardwareHandle>,
     audio_toggle: Option<AudioToggleController<PulseAudioSwitch, HardwareHandle>>,
+    launchers: Option<LauncherController>,
     hardware: HardwareHandle,
     shutdown: Option<Receiver<()>>,
     events: Receiver<HardwareEvent>,
@@ -67,6 +69,29 @@ impl App {
         info!("starting hardware backend");
         let (hardware_handle, events) = start_hardware(config.hardware.clone())?;
 
+        let config_settings = match config::load_settings() {
+            Ok(settings) => settings,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed to load streamdeck_ctrl configuration; optional features disabled"
+                );
+                None
+            }
+        };
+
+        let audio_toggle_settings = config_settings
+            .as_ref()
+            .and_then(|settings| settings.audio_toggle.clone().map(|config| AudioToggleSettings {
+                config,
+                config_path: Some(settings.path.clone()),
+            }));
+
+        let launcher_configs = config_settings
+            .as_ref()
+            .map(|settings| settings.launchers.clone())
+            .unwrap_or_default();
+
         let pulse_audio = config
             .pulse_sink
             .as_ref()
@@ -107,21 +132,28 @@ impl App {
             config.timer_default_secs,
         )?;
 
-        let audio_toggle = match AudioToggleConfig::load_default() {
-            Ok(Some(settings)) => {
-                match AudioToggleController::with_default_backend(settings, hardware_handle.clone())
-                {
-                    Ok(controller) => Some(controller),
-                    Err(err) => {
-                        warn!(error = %err, "failed to initialise audio output toggle");
-                        None
-                    }
+        let audio_toggle = if let Some(settings) = audio_toggle_settings {
+            match AudioToggleController::with_default_backend(settings, hardware_handle.clone()) {
+                Ok(controller) => Some(controller),
+                Err(err) => {
+                    warn!(error = %err, "failed to initialise audio output toggle");
+                    None
                 }
             }
-            Ok(None) => None,
-            Err(err) => {
-                warn!(error = %err, "failed to load audio toggle configuration");
-                None
+        } else {
+            None
+        };
+
+        let launchers = if launcher_configs.is_empty() {
+            None
+        } else {
+            match LauncherController::new(&launcher_configs, &hardware_handle) {
+                Ok(Some(controller)) => Some(controller),
+                Ok(None) => None,
+                Err(err) => {
+                    warn!(error = %err, "failed to initialise application launchers");
+                    None
+                }
             }
         };
 
@@ -130,6 +162,7 @@ impl App {
             brightness,
             timer,
             audio_toggle,
+            launchers,
             hardware: hardware_handle,
             shutdown: None,
             events,
@@ -241,6 +274,14 @@ impl App {
                     warn!(error = %err, "failed to refresh volume after audio sink switch");
                 }
                 handled = true;
+            }
+        }
+
+        if !handled {
+            if let Some(launchers) = self.launchers.as_ref() {
+                if launchers.on_button_pressed(index)? {
+                    handled = true;
+                }
             }
         }
 
