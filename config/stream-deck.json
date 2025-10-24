@@ -1,0 +1,21 @@
+  {
+    "audio_toggle": {
+      "button_index": 0,
+      "outputs": [
+        {
+          "id": 567,
+          "description": "Desktop Speakers",
+          "icon": { "material": "monitor" }
+        },
+        {
+          "id": 700,
+          "description": "Logitech A50 Headset",
+          "icon": { "material": "headphones" }
+        }
+      ]
+    },
+    "launchers": [
+      { "button_index": 4, "desktop_file": "/home/beau/.local/share/applications/pycharm.desktop" },
+      { "button_index": 5, "desktop_file": "/home/beau/.local/share/applications/clion.desktop" }
+    ]
+  }

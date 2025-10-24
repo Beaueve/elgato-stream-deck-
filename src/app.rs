@@ -7,7 +7,7 @@ use tracing::{info, warn};
 use crate::config;
 use crate::controls::{
     AudioToggleController, AudioToggleSettings, BrightnessController, EncoderController,
-    LauncherController, Tickable, TimerController, VolumeController,
+    LauncherController, NowPlayingController, Tickable, TimerController, VolumeController,
 };
 use crate::hardware::{
     EncoderId, HardwareConfig, HardwareEvent, HardwareHandle, start as start_hardware,
@@ -15,12 +15,14 @@ use crate::hardware::{
 use crate::system::audio::PulseAudioBackend;
 use crate::system::audio_switch::PulseAudioSwitch;
 use crate::system::brightness::DdcutilBackend;
+use crate::system::now_playing::PlayerctlBackend;
 
 pub struct App {
     volume: VolumeController<PulseAudioBackend, HardwareHandle>,
     brightness: BrightnessController<DdcutilBackend, HardwareHandle>,
     timer: TimerController<HardwareHandle>,
     audio_toggle: Option<AudioToggleController<PulseAudioSwitch, HardwareHandle>>,
+    now_playing: Option<NowPlayingController<PlayerctlBackend, HardwareHandle>>,
     launchers: Option<LauncherController>,
     hardware: HardwareHandle,
     shutdown: Option<Receiver<()>>,
@@ -41,6 +43,7 @@ pub struct AppConfig {
     pub pulse_sink: Option<String>,
     pub monitor_display: Option<String>,
     pub monitor_bus: Option<u8>,
+    pub now_playing_player: Option<String>,
     pub hardware: HardwareConfig,
 }
 
@@ -59,6 +62,7 @@ impl Default for AppConfig {
             pulse_sink: None,
             monitor_display: None,
             monitor_bus: None,
+            now_playing_player: Some("spotify".to_string()),
             hardware: HardwareConfig::default(),
         }
     }
@@ -80,12 +84,15 @@ impl App {
             }
         };
 
-        let audio_toggle_settings = config_settings
-            .as_ref()
-            .and_then(|settings| settings.audio_toggle.clone().map(|config| AudioToggleSettings {
-                config,
-                config_path: Some(settings.path.clone()),
-            }));
+        let audio_toggle_settings = config_settings.as_ref().and_then(|settings| {
+            settings
+                .audio_toggle
+                .clone()
+                .map(|config| AudioToggleSettings {
+                    config,
+                    config_path: Some(settings.path.clone()),
+                })
+        });
 
         let launcher_configs = config_settings
             .as_ref()
@@ -144,6 +151,21 @@ impl App {
             None
         };
 
+        let now_playing = {
+            let player = config
+                .now_playing_player
+                .clone()
+                .unwrap_or_else(|| "spotify".to_string());
+            let backend = PlayerctlBackend::new(player);
+            match NowPlayingController::new(backend, hardware_handle.clone(), EncoderId::Four) {
+                Ok(controller) => Some(controller),
+                Err(err) => {
+                    warn!(error = %err, "failed to initialise now-playing display");
+                    None
+                }
+            }
+        };
+
         let launchers = if launcher_configs.is_empty() {
             None
         } else {
@@ -162,6 +184,7 @@ impl App {
             brightness,
             timer,
             audio_toggle,
+            now_playing,
             launchers,
             hardware: hardware_handle,
             shutdown: None,
@@ -190,6 +213,11 @@ impl App {
                             if let Err(err) = self.brightness.on_tick() {
                                 warn!(error = %err, "brightness tick failed");
                             }
+                            if let Some(now_playing) = self.now_playing.as_mut() {
+                                if let Err(err) = now_playing.on_tick() {
+                                    warn!(error = %err, "now-playing update failed");
+                                }
+                            }
                         },
                         recv(shutdown) -> _ => {
                             break Ok(());
@@ -210,6 +238,11 @@ impl App {
                             }
                             if let Err(err) = self.brightness.on_tick() {
                                 warn!(error = %err, "brightness tick failed");
+                            }
+                            if let Some(now_playing) = self.now_playing.as_mut() {
+                                if let Err(err) = now_playing.on_tick() {
+                                    warn!(error = %err, "now-playing update failed");
+                                }
                             }
                         }
                     }

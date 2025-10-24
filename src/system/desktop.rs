@@ -93,16 +93,14 @@ fn parse_desktop_entry(contents: &str) -> Result<HashMap<String, String>> {
             .map(str::trim)
             .filter(|key| !key.is_empty())
             .ok_or_else(|| anyhow!("invalid desktop entry line: {line}"))?;
-        let value = parts
-            .next()
-            .map(str::trim)
-            .unwrap_or_default()
-            .to_string();
+        let value = parts.next().map(str::trim).unwrap_or_default().to_string();
         fields.insert(key.to_string(), value);
     }
 
     if fields.is_empty() {
-        Err(anyhow!("desktop entry missing required [Desktop Entry] section"))
+        Err(anyhow!(
+            "desktop entry missing required [Desktop Entry] section"
+        ))
     } else {
         Ok(fields)
     }

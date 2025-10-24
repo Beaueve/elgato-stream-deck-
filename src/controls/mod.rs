@@ -1,12 +1,14 @@
 mod audio_toggle;
 mod brightness;
 mod launcher;
+mod now_playing;
 mod timer;
 mod volume;
 
 pub use audio_toggle::{AudioToggleConfig, AudioToggleController, AudioToggleSettings};
 pub use brightness::BrightnessController;
 pub use launcher::LauncherController;
+pub use now_playing::NowPlayingController;
 pub use timer::TimerController;
 pub use volume::VolumeController;
 

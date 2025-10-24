@@ -2,6 +2,7 @@ use std::convert::TryInto;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
@@ -28,6 +29,8 @@ pub struct AudioToggleSettings {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AudioOutputConfig {
+    #[serde(default)]
+    pub id: Option<u32>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -144,10 +147,18 @@ where
         let next_index = 1usize.saturating_sub(self.active_index); // toggle between 0 and 1
         let target = &self.outputs[next_index];
         info!(target = %target.label, "switching audio output");
-        let sink = self
-            .backend
-            .set_default_sink(&target.selector)
-            .with_context(|| format!("failed to switch audio output to {}", target.label))?;
+        let sink = match self.backend.set_default_sink(&target.selector) {
+            Ok(sink) => sink,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    target = %target.label,
+                    "failed to switch audio output"
+                );
+                notify_switch_failure(&target.label, &err);
+                return Ok(());
+            }
+        };
         self.active_index = self.index_for_sink(&sink).unwrap_or(next_index);
         self.update_button_icon()
     }
@@ -239,6 +250,10 @@ impl OutputProfile {
 
 impl AudioOutputConfig {
     fn selector(&self) -> Result<SinkSelector> {
+        if let Some(id) = self.id {
+            return Ok(SinkSelector::by_id(id));
+        }
+
         if let Some(name) = &self.name {
             return Ok(SinkSelector::by_name(name.clone()));
         }
@@ -247,7 +262,7 @@ impl AudioOutputConfig {
             return Ok(SinkSelector::by_description(description.clone()));
         }
 
-        bail!("audio toggle output entry must provide `name` or `description`");
+        bail!("audio toggle output entry must provide `id`, `name`, or `description`");
     }
 
     fn label(&self) -> String {
@@ -255,6 +270,7 @@ impl AudioOutputConfig {
             .as_ref()
             .or(self.description.as_ref())
             .cloned()
+            .or_else(|| self.id.map(|id| format!("sink #{id}")))
             .unwrap_or_else(|| "unnamed sink".to_string())
     }
 }
@@ -346,6 +362,21 @@ fn load_icon_from_resolved(path: &Path, id: String, tint: Option<[u8; 3]>) -> Re
     Ok(ButtonImage { id, image, tint })
 }
 
+fn notify_switch_failure(label: &str, error: &anyhow::Error) {
+    let title = "Stream Deck Audio Toggle";
+    let body = format!("Failed to switch to {}:\n{}", label, error);
+    match Command::new("notify-send").arg(title).arg(body).status() {
+        Ok(status) => {
+            if !status.success() {
+                warn!(code = ?status.code(), "notify-send exited with failure status");
+            }
+        }
+        Err(err) => {
+            warn!(error = %err, "failed to send audio switch failure notification");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,6 +456,7 @@ mod tests {
             button_index: 2,
             outputs: [
                 AudioOutputConfig {
+                    id: Some(1),
                     name: None,
                     description: Some("HDMI/DisplayPort - HDA NVidia".into()),
                     icon: Some(IconConfig::Material {
@@ -432,6 +464,7 @@ mod tests {
                     }),
                 },
                 AudioOutputConfig {
+                    id: Some(2),
                     name: None,
                     description: Some("Digital Output - A50".into()),
                     icon: Some(IconConfig::Material {
@@ -511,15 +544,18 @@ mod tests {
         let backend = FakeBackend {
             sinks: vec![
                 SinkInfo {
+                    id: Some(1),
                     name: "sink_a".into(),
                     description: Some("HDMI/DisplayPort - HDA NVidia".into()),
                 },
                 SinkInfo {
+                    id: Some(2),
                     name: "sink_b".into(),
                     description: Some("Digital Output - A50".into()),
                 },
             ],
             current: std::sync::Mutex::new(Some(SinkInfo {
+                id: Some(2),
                 name: "sink_b".into(),
                 description: Some("Digital Output - A50".into()),
             })),
@@ -539,15 +575,18 @@ mod tests {
         let backend = FakeBackend {
             sinks: vec![
                 SinkInfo {
+                    id: Some(1),
                     name: "sink_monitor".into(),
                     description: Some("HDMI/DisplayPort - HDA NVidia".into()),
                 },
                 SinkInfo {
+                    id: Some(2),
                     name: "sink_headset".into(),
                     description: Some("Digital Output - A50".into()),
                 },
             ],
             current: std::sync::Mutex::new(Some(SinkInfo {
+                id: Some(1),
                 name: "sink_monitor".into(),
                 description: Some("HDMI/DisplayPort - HDA NVidia".into()),
             })),

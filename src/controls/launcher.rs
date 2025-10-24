@@ -281,7 +281,9 @@ fn strip_field_codes(token: &str) -> Option<String> {
     Some(output)
 }
 
-fn resolve_icon(entry: &DesktopEntry) -> Option<Result<(String, std::sync::Arc<image::RgbaImage>)>> {
+fn resolve_icon(
+    entry: &DesktopEntry,
+) -> Option<Result<(String, std::sync::Arc<image::RgbaImage>)>> {
     let icon = entry.icon.as_deref()?;
     let entry_dir = entry.source_path.parent();
 
@@ -368,8 +370,8 @@ fn icon_search_directories() -> Vec<PathBuf> {
         dirs.push(PathBuf::from(home).join(".local/share/icons"));
     }
 
-    let data_dirs = env::var("XDG_DATA_DIRS")
-        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+    let data_dirs =
+        env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
     for dir in data_dirs.split(':') {
         if dir.is_empty() {
             continue;
@@ -430,7 +432,11 @@ mod tests {
     }
 
     impl DisplayPipeline for RecordingHardware {
-        fn update_encoder(&self, _: crate::hardware::EncoderId, _: crate::hardware::EncoderDisplay) -> Result<()> {
+        fn update_encoder(
+            &self,
+            _: crate::hardware::EncoderId,
+            _: crate::hardware::EncoderDisplay,
+        ) -> Result<()> {
             Ok(())
         }
 

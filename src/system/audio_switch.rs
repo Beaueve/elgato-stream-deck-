@@ -4,17 +4,23 @@ use anyhow::{Context, Result, anyhow, bail};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SinkInfo {
+    pub id: Option<u32>,
     pub name: String,
     pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SinkSelector {
+    Id(u32),
     Name(String),
     Description(String),
 }
 
 impl SinkSelector {
+    pub fn by_id(id: u32) -> Self {
+        Self::Id(id)
+    }
+
     pub fn by_name(name: impl Into<String>) -> Self {
         Self::Name(name.into())
     }
@@ -25,6 +31,7 @@ impl SinkSelector {
 
     pub fn describe(&self) -> &str {
         match self {
+            SinkSelector::Id(_) => "specified sink id",
             SinkSelector::Name(name) => name.as_str(),
             SinkSelector::Description(description) => description.as_str(),
         }
@@ -32,6 +39,7 @@ impl SinkSelector {
 
     pub fn matches(&self, sink: &SinkInfo) -> bool {
         match self {
+            SinkSelector::Id(expected) => sink.id == Some(*expected),
             SinkSelector::Name(expected) => {
                 let expected = expected.to_ascii_lowercase();
                 let name = sink.name.to_ascii_lowercase();
@@ -151,6 +159,7 @@ impl AudioSwitchBackend for PulseAudioSwitch {
         }
 
         Ok(Some(SinkInfo {
+            id: None,
             name: default,
             description: None,
         }))
@@ -178,28 +187,40 @@ pub(crate) fn select_sink<'a>(
             }
         }
         SinkSelector::Name(_) => {}
+        SinkSelector::Id(_) => {}
     }
 
-    Err(anyhow!(
-        "no matching sink found for {}",
-        selector.describe()
-    ))
+    Err(match selector {
+        SinkSelector::Id(id) => anyhow!("no matching sink found for sink id {}", id),
+        SinkSelector::Name(_) | SinkSelector::Description(_) => {
+            anyhow!("no matching sink found for {}", selector.describe())
+        }
+    })
 }
 
 pub(crate) fn parse_sinks(output: &str) -> Vec<SinkInfo> {
     let mut sinks = Vec::new();
+    let mut current_id: Option<u32> = None;
     let mut current_name: Option<String> = None;
     let mut description: Option<String> = None;
 
     for line in output.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("Sink #") {
+        if let Some(value) = trimmed.strip_prefix("Sink #") {
             if let Some(name) = current_name.take() {
                 sinks.push(SinkInfo {
+                    id: current_id,
                     name,
                     description: description.take(),
                 });
             }
+            // reset for the next sink
+            current_name = None;
+            description = None;
+            current_id = value
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse().ok());
             continue;
         }
 
@@ -222,7 +243,11 @@ pub(crate) fn parse_sinks(output: &str) -> Vec<SinkInfo> {
     }
 
     if let Some(name) = current_name {
-        sinks.push(SinkInfo { name, description });
+        sinks.push(SinkInfo {
+            id: current_id,
+            name,
+            description,
+        });
     }
 
     sinks
@@ -276,6 +301,7 @@ Sink #2
 
         let sinks = parse_sinks(output);
         assert_eq!(sinks.len(), 2);
+        assert_eq!(sinks[0].id, Some(1));
         assert_eq!(
             sinks[0].name,
             "alsa_output.pci-0000_09_00.3.hdmi-stereo-extra2"
@@ -284,6 +310,7 @@ Sink #2
             sinks[0].description.as_deref(),
             Some("HDMI/DisplayPort - HDA NVidia")
         );
+        assert_eq!(sinks[1].id, Some(2));
         assert_eq!(
             sinks[1].description.as_deref(),
             Some("Digital Output (SteelSeries Arctis Pro)")
@@ -308,10 +335,12 @@ Default Source: alsa_input.usb-SteelSeries_Arctis_Pro-00.mono-fallback
     fn selects_by_description_substring() {
         let sinks = vec![
             SinkInfo {
+                id: Some(1),
                 name: "sink_a".into(),
                 description: Some("First Sink".into()),
             },
             SinkInfo {
+                id: Some(2),
                 name: "sink_b".into(),
                 description: Some("Second Device".into()),
             },
@@ -330,5 +359,25 @@ Default Source: alsa_input.usb-SteelSeries_Arctis_Pro-00.mono-fallback
 "#;
         let inputs = parse_sink_inputs(output);
         assert_eq!(inputs, vec!["36".to_string(), "37".to_string()]);
+    }
+
+    #[test]
+    fn selects_by_id() {
+        let sinks = vec![
+            SinkInfo {
+                id: Some(11),
+                name: "sink_a".into(),
+                description: Some("First Sink".into()),
+            },
+            SinkInfo {
+                id: Some(12),
+                name: "sink_b".into(),
+                description: Some("Second Device".into()),
+            },
+        ];
+
+        let selector = SinkSelector::by_id(12);
+        let selected = select_sink(&sinks, &selector).unwrap();
+        assert_eq!(selected.name, "sink_b");
     }
 }

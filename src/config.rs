@@ -111,6 +111,11 @@ pub fn default_config_paths() -> Vec<PathBuf> {
     }
 
     let candidate_names = ["stream-deck.json", "audio_toggle.json"];
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    for name in &candidate_names {
+        paths.push(manifest_dir.join("config").join(name));
+    }
 
     if let Some(xdg) = env::var_os("XDG_CONFIG_HOME") {
         let base = PathBuf::from(xdg).join("streamdeck_ctrl");
@@ -169,10 +174,9 @@ mod tests {
         )
         .unwrap();
 
-        let settings = parse_config(
-            &fs::read_to_string(&path).expect("failed to read written config"),
-        )
-        .unwrap();
+        let settings =
+            parse_config(&fs::read_to_string(&path).expect("failed to read written config"))
+                .unwrap();
 
         assert!(settings.audio_toggle.is_some());
         assert_eq!(settings.launchers.len(), 1);
@@ -199,10 +203,9 @@ mod tests {
         )
         .unwrap();
 
-        let settings = parse_config(
-            &fs::read_to_string(&path).expect("failed to read written config"),
-        )
-        .unwrap();
+        let settings =
+            parse_config(&fs::read_to_string(&path).expect("failed to read written config"))
+                .unwrap();
 
         assert!(settings.audio_toggle.is_some());
         assert!(settings.launchers.is_empty());
