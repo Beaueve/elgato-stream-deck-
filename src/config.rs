@@ -12,6 +12,7 @@ use crate::controls::AudioToggleConfig;
 pub struct StreamDeckSettings {
     pub path: PathBuf,
     pub audio_toggle: Option<AudioToggleConfig>,
+    pub now_playing_player: Option<String>,
     pub launchers: Vec<LauncherButtonConfig>,
 }
 
@@ -27,6 +28,7 @@ pub struct LauncherButtonConfig {
 #[serde(default)]
 struct StructuredConfig {
     pub audio_toggle: Option<AudioToggleConfig>,
+    pub now_playing_player: Option<String>,
     pub launchers: Vec<LauncherButtonConfig>,
 }
 
@@ -50,6 +52,7 @@ pub fn load_settings() -> Result<Option<StreamDeckSettings>> {
         return Ok(Some(StreamDeckSettings {
             path: candidate,
             audio_toggle: structured.audio_toggle,
+            now_playing_player: structured.now_playing_player,
             launchers: structured.launchers,
         }));
     }
@@ -72,6 +75,14 @@ fn parse_config(contents: &str) -> Result<StructuredConfig> {
             .transpose()?
             .unwrap_or_default();
 
+        let now_playing_player = map
+            .remove("now_playing_player")
+            .map(|raw| {
+                serde_json::from_value(raw)
+                    .context("failed to parse `now_playing_player` from configuration")
+            })
+            .transpose()?;
+
         let audio_toggle = map
             .remove("audio_toggle")
             .map(|raw| {
@@ -83,6 +94,7 @@ fn parse_config(contents: &str) -> Result<StructuredConfig> {
         let inline_toggle = if audio_toggle.is_none() && map.contains_key("outputs") {
             let mut inline_map = map.clone();
             inline_map.remove("launchers");
+            inline_map.remove("now_playing_player");
             serde_json::from_value(Value::Object(inline_map)).ok()
         } else {
             None
@@ -90,6 +102,7 @@ fn parse_config(contents: &str) -> Result<StructuredConfig> {
 
         return Ok(StructuredConfig {
             audio_toggle: audio_toggle.or(inline_toggle),
+            now_playing_player,
             launchers,
         });
     }
@@ -97,6 +110,7 @@ fn parse_config(contents: &str) -> Result<StructuredConfig> {
     match serde_json::from_value::<AudioToggleConfig>(value.clone()) {
         Ok(audio_toggle) => Ok(StructuredConfig {
             audio_toggle: Some(audio_toggle),
+            now_playing_player: None,
             launchers: Vec::new(),
         }),
         Err(err) => Err(anyhow!(err)),
@@ -167,6 +181,7 @@ mod tests {
                         {"description": "Headset"}
                     ]
                 },
+                "now_playing_player": "spotify,%any",
                 "launchers": [
                     {"button_index": 4, "desktop_file": "/tmp/app.desktop"}
                 ]
@@ -179,6 +194,7 @@ mod tests {
                 .unwrap();
 
         assert!(settings.audio_toggle.is_some());
+        assert_eq!(settings.now_playing_player.as_deref(), Some("spotify,%any"));
         assert_eq!(settings.launchers.len(), 1);
         assert_eq!(settings.launchers[0].button_index, 4);
         assert_eq!(
@@ -208,6 +224,7 @@ mod tests {
                 .unwrap();
 
         assert!(settings.audio_toggle.is_some());
+        assert!(settings.now_playing_player.is_none());
         assert!(settings.launchers.is_empty());
     }
 }

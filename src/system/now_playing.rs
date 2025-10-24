@@ -2,21 +2,12 @@ use std::process::{Command, Output};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use once_cell::sync::Lazy;
 use tracing::{debug, info, warn};
 
 use crate::system::availability::RetryableAvailability;
 
 const FIELD_SEPARATOR: &str = "\u{1F}";
 const PLAYERCTL_BACKOFF_SECS: u64 = 10;
-
-static PLAYERCTL_AVAILABLE: Lazy<bool> = Lazy::new(|| {
-    Command::new("playerctl")
-        .arg("--version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackStatus {
@@ -64,6 +55,8 @@ impl PlaybackState {
 
 pub trait NowPlayingBackend: Send {
     fn now_playing(&self) -> Result<PlaybackState>;
+    fn next(&self) -> Result<()>;
+    fn previous(&self) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]
@@ -76,10 +69,7 @@ impl PlayerctlBackend {
     pub fn new(player: impl Into<String>) -> Self {
         Self {
             player: player.into(),
-            availability: Arc::new(RetryableAvailability::new(
-                *PLAYERCTL_AVAILABLE,
-                PLAYERCTL_BACKOFF_SECS,
-            )),
+            availability: Arc::new(RetryableAvailability::new(true, PLAYERCTL_BACKOFF_SECS)),
         }
     }
 
@@ -160,10 +150,6 @@ impl PlayerctlBackend {
 
 impl NowPlayingBackend for PlayerctlBackend {
     fn now_playing(&self) -> Result<PlaybackState> {
-        if !*PLAYERCTL_AVAILABLE {
-            return Ok(PlaybackState::unavailable());
-        }
-
         let output = match self.run_metadata_query() {
             Ok(output) => output,
             Err(err) => {
@@ -202,6 +188,35 @@ impl NowPlayingBackend for PlayerctlBackend {
             Ok(state)
         } else {
             Ok(PlaybackState::stopped())
+        }
+    }
+
+    fn next(&self) -> Result<()> {
+        Self::run_playerctl_command(&self.player, "next")
+    }
+
+    fn previous(&self) -> Result<()> {
+        Self::run_playerctl_command(&self.player, "previous")
+    }
+}
+
+impl PlayerctlBackend {
+    fn run_playerctl_command(player: &str, command: &str) -> Result<()> {
+        let status = Command::new("playerctl")
+            .arg("--player")
+            .arg(player)
+            .arg(command)
+            .status()
+            .with_context(|| {
+                format!("failed to execute playerctl {command} for player {player}")
+            })?;
+
+        if status.success() {
+            Ok(())
+        } else if let Some(code) = status.code() {
+            bail!("playerctl {command} exited with status {code}");
+        } else {
+            bail!("playerctl {command} terminated by signal");
         }
     }
 }

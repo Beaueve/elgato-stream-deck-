@@ -62,7 +62,7 @@ impl Default for AppConfig {
             pulse_sink: None,
             monitor_display: None,
             monitor_bus: None,
-            now_playing_player: Some("spotify".to_string()),
+            now_playing_player: Some("spotify,%any".to_string()),
             hardware: HardwareConfig::default(),
         }
     }
@@ -152,10 +152,11 @@ impl App {
         };
 
         let now_playing = {
-            let player = config
-                .now_playing_player
-                .clone()
-                .unwrap_or_else(|| "spotify".to_string());
+            let player = config_settings
+                .as_ref()
+                .and_then(|settings| settings.now_playing_player.clone())
+                .or_else(|| config.now_playing_player.clone())
+                .unwrap_or_else(|| "spotify,%any".to_string());
             let backend = PlayerctlBackend::new(player);
             match NowPlayingController::new(backend, hardware_handle.clone(), EncoderId::Four) {
                 Ok(controller) => Some(controller),
@@ -273,10 +274,10 @@ impl App {
             EncoderId::One => self.volume.on_turn(delta),
             EncoderId::Two => self.brightness.on_turn(delta),
             EncoderId::Three => self.timer.on_turn(delta),
-            EncoderId::Four => {
-                info!("encoder 4 not assigned");
-                Ok(())
-            }
+            EncoderId::Four => match self.now_playing.as_mut() {
+                Some(now_playing) => now_playing.on_turn(delta),
+                None => Ok(()),
+            },
         }
     }
 

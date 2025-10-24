@@ -188,7 +188,10 @@ fn draw_value(segment: &mut RgbImage, value: &str, has_status: bool, color: Opti
     if has_status {
         y_center = y_center.saturating_sub(6);
     }
-    let x = ((SEGMENT_WIDTH - text_width) / 2).min(SEGMENT_WIDTH.saturating_sub(text_width));
+    let x = match SEGMENT_WIDTH.checked_sub(text_width) {
+        Some(delta) => (delta / 2).max(SEGMENT_MARGIN),
+        None => SEGMENT_MARGIN,
+    };
     font::draw_text(
         segment,
         value,
@@ -203,7 +206,10 @@ fn draw_status(segment: &mut RgbImage, status: &str) {
     let text = status.to_ascii_uppercase();
     let scale = 2;
     let (text_width, text_height) = font::measure_text(&text, scale);
-    let x = ((SEGMENT_WIDTH - text_width) / 2).min(SEGMENT_WIDTH.saturating_sub(text_width));
+    let x = match SEGMENT_WIDTH.checked_sub(text_width) {
+        Some(delta) => (delta / 2).max(SEGMENT_MARGIN),
+        None => SEGMENT_MARGIN,
+    };
     let y = SEGMENT_HEIGHT.saturating_sub(PROGRESS_MARGIN + PROGRESS_HEIGHT + text_height + 4);
     font::draw_text(segment, &text, x, y, scale, STATUS_COLOR);
 }

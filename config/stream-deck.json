@@ -14,6 +14,7 @@
         }
       ]
     },
+    "now_playing_player": "spotify,%any",
     "launchers": [
       { "button_index": 4, "desktop_file": "/home/beau/.local/share/applications/pycharm.desktop" },
       { "button_index": 5, "desktop_file": "/home/beau/.local/share/applications/clion.desktop" }
