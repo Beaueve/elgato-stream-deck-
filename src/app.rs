@@ -214,6 +214,12 @@ impl App {
                             if let Err(err) = self.brightness.on_tick() {
                                 warn!(error = %err, "brightness tick failed");
                             }
+                            if let Some(toggle) = self.audio_toggle.as_mut() {
+                                if let Err(err) = toggle.on_tick() {
+                                    warn!(error = %err, "audio sink update failed");
+                                }
+                            }
+
                             if let Some(now_playing) = self.now_playing.as_mut() {
                                 if let Err(err) = now_playing.on_tick() {
                                     warn!(error = %err, "now-playing update failed");
@@ -240,6 +246,12 @@ impl App {
                             if let Err(err) = self.brightness.on_tick() {
                                 warn!(error = %err, "brightness tick failed");
                             }
+                            if let Some(toggle) = self.audio_toggle.as_mut() {
+                                if let Err(err) = toggle.on_tick() {
+                                    warn!(error = %err, "audio sink update failed");
+                                }
+                            }
+
                             if let Some(now_playing) = self.now_playing.as_mut() {
                                 if let Err(err) = now_playing.on_tick() {
                                     warn!(error = %err, "now-playing update failed");
@@ -302,8 +314,7 @@ impl App {
     fn handle_button_press(&mut self, index: u8) -> Result<()> {
         let mut handled = false;
         if let Some(toggle) = self.audio_toggle.as_mut() {
-            if index == toggle.button_index() {
-                toggle.on_button_pressed(index)?;
+            if toggle.on_button_pressed(index)? {
                 if let Err(err) = self.volume.sync() {
                     warn!(error = %err, "failed to refresh volume after audio sink switch");
                 }

@@ -1,8 +1,9 @@
-use std::convert::TryInto;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
@@ -17,8 +18,9 @@ const MATERIAL_ICON_TINT: [u8; 3] = [220, 235, 255];
 #[derive(Debug, Clone, Deserialize)]
 pub struct AudioToggleConfig {
     #[serde(default = "default_button_index")]
-    pub button_index: u8,
-    pub outputs: [AudioOutputConfig; 2],
+    pub button_index: Option<u8>,
+    #[serde(default)]
+    pub outputs: Vec<AudioOutputConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +31,8 @@ pub struct AudioToggleSettings {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AudioOutputConfig {
+    #[serde(default)]
+    pub button_index: Option<u8>,
     #[serde(default)]
     pub id: Option<u32>,
     #[serde(default)]
@@ -45,6 +49,7 @@ pub enum IconConfig {
     Material { material: MaterialIcon },
     Path { path: String },
     Simple(MaterialIcon),
+    File(String),
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -54,8 +59,13 @@ pub enum MaterialIcon {
     Headphones,
 }
 
-fn default_button_index() -> u8 {
-    0
+const ACTIVE_TINT: [u8; 3] = [0, 200, 150];
+const AVAILABLE_TINT: [u8; 3] = [120, 185, 255];
+const UNAVAILABLE_TINT: [u8; 3] = [110, 110, 125];
+const DEGRADED_TINT: [u8; 3] = [230, 170, 90];
+
+fn default_button_index() -> Option<u8> {
+    Some(0)
 }
 
 impl AudioToggleConfig {
@@ -89,16 +99,45 @@ where
 {
     backend: B,
     hardware: H,
-    button_index: u8,
-    outputs: [OutputProfile; 2],
-    active_index: usize,
+    outputs: Vec<OutputEntry>,
+    button_map: HashMap<u8, Vec<usize>>,
+}
+
+#[derive(Debug, Clone)]
+struct OutputEntry {
+    profile: OutputProfile,
+    state: OutputState,
 }
 
 #[derive(Debug, Clone)]
 struct OutputProfile {
     selector: SinkSelector,
-    icon: ButtonImage,
+    icons: OutputIcons,
     label: String,
+    button_index: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OutputState {
+    available: bool,
+    active: bool,
+}
+
+impl Default for OutputState {
+    fn default() -> Self {
+        Self {
+            available: false,
+            active: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OutputIcons {
+    available_selected: ButtonImage,
+    available_inactive: ButtonImage,
+    unavailable_selected: ButtonImage,
+    unavailable_inactive: ButtonImage,
 }
 
 impl<B, H> AudioToggleController<B, H>
@@ -112,100 +151,181 @@ where
         hardware: H,
         icon_paths: &IconPaths,
     ) -> Result<Self> {
-        let outputs = config
-            .outputs
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| OutputProfile::from_config(entry, index, icon_paths))
-            .collect::<Result<Vec<_>>>()?;
+        if config.outputs.is_empty() {
+            bail!("audio toggle requires at least one configured output");
+        }
 
-        let outputs: [OutputProfile; 2] = outputs
-            .try_into()
-            .map_err(|_| anyhow!("audio toggle requires exactly two outputs in configuration"))?;
+        let fallback_button = config.button_index;
+
+        let mut outputs = Vec::with_capacity(config.outputs.len());
+        for (index, entry) in config.outputs.iter().enumerate() {
+            let profile = OutputProfile::from_config(entry, fallback_button, index, icon_paths)?;
+            outputs.push(OutputEntry {
+                profile,
+                state: OutputState::default(),
+            });
+        }
+
+        let mut button_map: HashMap<u8, Vec<usize>> = HashMap::new();
+        for (idx, entry) in outputs.iter().enumerate() {
+            button_map
+                .entry(entry.profile.button_index)
+                .or_default()
+                .push(idx);
+        }
 
         let mut controller = Self {
             backend,
             hardware,
-            button_index: config.button_index,
             outputs,
-            active_index: 0,
+            button_map,
         };
-
+        controller.initialise_icons()?;
         controller.refresh_state()?;
         Ok(controller)
     }
 
-    pub fn button_index(&self) -> u8 {
-        self.button_index
-    }
+    pub fn on_button_pressed(&mut self, button_index: u8) -> Result<bool> {
+        let Some(indices) = self.button_map.get(&button_index) else {
+            return Ok(false);
+        };
 
-    pub fn on_button_pressed(&mut self, button_index: u8) -> Result<()> {
-        if button_index != self.button_index {
-            return Ok(());
+        if indices.is_empty() {
+            return Ok(false);
         }
 
-        let next_index = 1usize.saturating_sub(self.active_index); // toggle between 0 and 1
-        let target = &self.outputs[next_index];
-        info!(target = %target.label, "switching audio output");
-        let sink = match self.backend.set_default_sink(&target.selector) {
-            Ok(sink) => sink,
+        let target_index = if indices.len() == 1 {
+            indices[0]
+        } else {
+            self.select_next_in_group(indices)
+        };
+
+        let target = &self.outputs[target_index];
+        info!(target = %target.profile.label, "switching audio output");
+
+        match self
+            .backend
+            .set_default_sink(&target.profile.selector)
+            .with_context(|| format!("failed to set default sink to {}", target.profile.label))
+        {
+            Ok(_) => {
+                if let Err(err) = self.refresh_state() {
+                    warn!(
+                        error = %err,
+                        "failed to refresh audio sink state after switch"
+                    );
+                }
+            }
             Err(err) => {
                 warn!(
                     error = %err,
-                    target = %target.label,
+                    target = %target.profile.label,
                     "failed to switch audio output"
                 );
-                notify_switch_failure(&target.label, &err);
-                return Ok(());
+                notify_switch_failure(&target.profile.label, &err);
+                if let Err(refresh_err) = self.refresh_state() {
+                    warn!(
+                        error = %refresh_err,
+                        "failed to refresh audio sink state after switch failure"
+                    );
+                }
             }
-        };
-        self.active_index = self.index_for_sink(&sink).unwrap_or(next_index);
-        self.update_button_icon()
+        }
+
+        Ok(true)
+    }
+
+    pub fn on_tick(&mut self) -> Result<()> {
+        self.refresh_state()
+    }
+
+    fn select_next_in_group(&self, indices: &[usize]) -> usize {
+        if indices.len() <= 1 {
+            return indices[0];
+        }
+
+        let active_position = indices.iter().enumerate().find_map(|(pos, idx)| {
+            let active = self.outputs[*idx].state.active;
+            active.then_some(pos)
+        });
+
+        if let Some(pos) = active_position {
+            let next = (pos + 1) % indices.len();
+            return indices[next];
+        }
+
+        indices
+            .iter()
+            .copied()
+            .find(|idx| self.outputs[*idx].state.available)
+            .unwrap_or(indices[0])
+    }
+
+    fn initialise_icons(&mut self) -> Result<()> {
+        for idx in 0..self.outputs.len() {
+            self.push_icon(idx)?;
+        }
+        Ok(())
     }
 
     fn refresh_state(&mut self) -> Result<()> {
-        match self.backend.current_default_sink() {
-            Ok(Some(current)) => {
-                if let Some(index) = self.index_for_sink(&current) {
-                    self.active_index = index;
-                } else {
-                    warn!(
-                        sink = %current.name,
-                        "default sink not present in toggle configuration; using configured primary output"
-                    );
-                    self.active_index = 0;
-                }
+        let sinks = self.backend.list_sinks()?;
+        let current = self.backend.current_default_sink()?;
+        let mut matched_default = false;
+
+        for index in 0..self.outputs.len() {
+            let profile = &self.outputs[index].profile;
+            let available = sinks.iter().any(|sink| profile.selector.matches(sink));
+            let active = current
+                .as_ref()
+                .map(|sink| profile.selector.matches(sink))
+                .unwrap_or(false);
+            if active {
+                matched_default = true;
             }
-            Ok(None) => {
-                self.active_index = 0;
-            }
-            Err(err) => {
-                warn!(error = %err, "failed to determine current default sink");
-                self.active_index = 0;
+            let new_state = OutputState { available, active };
+            self.apply_state(index, new_state)?;
+        }
+
+        if let Some(current_sink) = &current {
+            if !matched_default {
+                warn!(
+                    sink = %current_sink.name,
+                    "default sink not present in audio toggle configuration"
+                );
             }
         }
 
-        self.update_button_icon()
+        Ok(())
     }
 
-    fn index_for_sink(&self, sink: &SinkInfo) -> Option<usize> {
-        self.outputs
-            .iter()
-            .position(|profile| profile.selector.matches(sink))
-    }
+    fn apply_state(&mut self, index: usize, new_state: OutputState) -> Result<()> {
+        let entry = self
+            .outputs
+            .get_mut(index)
+            .ok_or_else(|| anyhow!("output index {} out of bounds", index))?;
 
-    fn update_button_icon(&self) -> Result<()> {
-        if let Some(profile) = self.outputs.get(self.active_index) {
-            self.hardware
-                .update_button_icon(self.button_index, Some(profile.icon.clone()))
-        } else {
-            self.hardware.update_button_icon(self.button_index, None)
+        if entry.state == new_state {
+            return Ok(());
         }
+
+        entry.state = new_state;
+        self.push_icon(index)
+    }
+
+    fn push_icon(&self, index: usize) -> Result<()> {
+        let entry = self
+            .outputs
+            .get(index)
+            .ok_or_else(|| anyhow!("output index {} out of bounds", index))?;
+        let icon = entry.profile.icons.icon(entry.state);
+        self.hardware
+            .update_button_icon(entry.profile.button_index, Some(icon))
     }
 
     #[cfg(test)]
-    fn active_index(&self) -> usize {
-        self.active_index
+    fn state_for_index(&self, index: usize) -> OutputState {
+        self.outputs[index].state
     }
 }
 
@@ -230,20 +350,30 @@ where
 impl OutputProfile {
     fn from_config(
         config: &AudioOutputConfig,
+        fallback_button: Option<u8>,
         index: usize,
         icon_paths: &IconPaths,
     ) -> Result<Self> {
         let selector = config.selector()?;
+        let button_index = config.button_index.or(fallback_button).ok_or_else(|| {
+            anyhow!(
+                "audio output configuration at index {} must define `button_index`",
+                index
+            )
+        })?;
         let fallback_icon = match index {
             0 => MaterialIcon::Monitor,
             _ => MaterialIcon::Headphones,
         };
-        let icon = load_icon_from_config(config.icon.as_ref(), fallback_icon, icon_paths)?;
+        let mut base_icon = load_icon_from_config(config.icon.as_ref(), fallback_icon, icon_paths)?;
+        base_icon.tint = None;
         let label = config.label();
+        let icons = OutputIcons::from_base(&base_icon, button_index, index);
         Ok(Self {
             selector,
-            icon,
+            icons,
             label,
+            button_index,
         })
     }
 }
@@ -275,6 +405,90 @@ impl AudioOutputConfig {
     }
 }
 
+impl OutputIcons {
+    fn from_base(base: &ButtonImage, button_index: u8, index: usize) -> Self {
+        let base_id = normalize_id(&base.id);
+        Self {
+            available_selected: tinted_variant(
+                base,
+                button_index,
+                index,
+                &base_id,
+                "active",
+                ACTIVE_TINT,
+            ),
+            available_inactive: tinted_variant(
+                base,
+                button_index,
+                index,
+                &base_id,
+                "available",
+                AVAILABLE_TINT,
+            ),
+            unavailable_selected: tinted_variant(
+                base,
+                button_index,
+                index,
+                &base_id,
+                "unavailable-active",
+                DEGRADED_TINT,
+            ),
+            unavailable_inactive: tinted_variant(
+                base,
+                button_index,
+                index,
+                &base_id,
+                "unavailable",
+                UNAVAILABLE_TINT,
+            ),
+        }
+    }
+
+    fn icon(&self, state: OutputState) -> ButtonImage {
+        match (state.available, state.active) {
+            (true, true) => self.available_selected.clone(),
+            (true, false) => self.available_inactive.clone(),
+            (false, true) => self.unavailable_selected.clone(),
+            (false, false) => self.unavailable_inactive.clone(),
+        }
+    }
+}
+
+fn normalize_id(id: &str) -> String {
+    let mut slug = String::with_capacity(id.len());
+    for ch in id.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if ch == '-' || ch == '_' {
+            if !slug.ends_with(ch) {
+                slug.push(ch);
+            }
+        }
+    }
+
+    if slug.is_empty() {
+        "icon".to_string()
+    } else {
+        slug.truncate(32);
+        slug
+    }
+}
+
+fn tinted_variant(
+    base: &ButtonImage,
+    button_index: u8,
+    index: usize,
+    base_id: &str,
+    suffix: &str,
+    tint: [u8; 3],
+) -> ButtonImage {
+    ButtonImage {
+        id: format!("audio-{}-{}-{}-{}", button_index, index, base_id, suffix),
+        image: Arc::clone(&base.image),
+        tint: Some(tint),
+    }
+}
+
 fn load_icon_from_config(
     icon: Option<&IconConfig>,
     fallback: MaterialIcon,
@@ -284,6 +498,7 @@ fn load_icon_from_config(
         Some(IconConfig::Material { material }) => load_material_icon(*material, paths),
         Some(IconConfig::Path { path }) => load_icon_from_path(Path::new(path), path, None, paths),
         Some(IconConfig::Simple(material)) => load_material_icon(*material, paths),
+        Some(IconConfig::File(path)) => load_icon_from_path(Path::new(path), path, None, paths),
         None => load_material_icon(fallback, paths),
     }
 }
@@ -449,13 +664,18 @@ mod tests {
         fn current_default_sink(&self) -> Result<Option<SinkInfo>> {
             Ok(self.current.lock().unwrap().clone())
         }
+
+        fn list_sinks(&self) -> Result<Vec<SinkInfo>> {
+            Ok(self.sinks.clone())
+        }
     }
 
     fn sample_config() -> AudioToggleConfig {
         AudioToggleConfig {
-            button_index: 2,
-            outputs: [
+            button_index: Some(2),
+            outputs: vec![
                 AudioOutputConfig {
+                    button_index: None,
                     id: Some(1),
                     name: None,
                     description: Some("HDMI/DisplayPort - HDA NVidia".into()),
@@ -464,9 +684,45 @@ mod tests {
                     }),
                 },
                 AudioOutputConfig {
+                    button_index: None,
                     id: Some(2),
                     name: None,
                     description: Some("Digital Output - A50".into()),
+                    icon: Some(IconConfig::Material {
+                        material: MaterialIcon::Headphones,
+                    }),
+                },
+            ],
+        }
+    }
+
+    fn multi_button_config() -> AudioToggleConfig {
+        AudioToggleConfig {
+            button_index: None,
+            outputs: vec![
+                AudioOutputConfig {
+                    button_index: Some(0),
+                    id: Some(1),
+                    name: Some("sink_monitor".into()),
+                    description: Some("Monitor".into()),
+                    icon: Some(IconConfig::Material {
+                        material: MaterialIcon::Monitor,
+                    }),
+                },
+                AudioOutputConfig {
+                    button_index: Some(1),
+                    id: Some(2),
+                    name: Some("sink_headset".into()),
+                    description: Some("Headset".into()),
+                    icon: Some(IconConfig::Material {
+                        material: MaterialIcon::Headphones,
+                    }),
+                },
+                AudioOutputConfig {
+                    button_index: Some(2),
+                    id: Some(3),
+                    name: Some("sink_earbuds".into()),
+                    description: Some("Earbuds".into()),
                     icon: Some(IconConfig::Material {
                         material: MaterialIcon::Headphones,
                     }),
@@ -492,8 +748,27 @@ mod tests {
         .unwrap();
 
         let config = AudioToggleConfig::from_path(&path).unwrap();
-        assert_eq!(config.button_index, 1);
+        assert_eq!(config.button_index, Some(1));
         assert_eq!(config.outputs[0].description.as_deref(), Some("Output A"));
+    }
+
+    #[test]
+    fn parses_string_icon_path() {
+        let config: AudioToggleConfig = serde_json::from_str(
+            r#"{
+                "button_index": 0,
+                "outputs": [
+                    { "description": "Monitor", "icon": "assets/monitor.png" },
+                    { "description": "Headset" }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        match config.outputs[0].icon.as_ref().unwrap() {
+            IconConfig::File(path) => assert_eq!(path, "assets/monitor.png"),
+            other => panic!("unexpected icon variant: {:?}", other),
+        }
     }
 
     static ENV_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -566,7 +841,8 @@ mod tests {
         let icon_paths = IconPaths::new(None);
         let controller =
             AudioToggleController::new(config, backend, Arc::new(hardware), &icon_paths).unwrap();
-        assert_eq!(controller.active_index(), 1);
+        assert!(controller.state_for_index(0).available);
+        assert!(controller.state_for_index(1).active);
     }
 
     #[test]
@@ -598,11 +874,58 @@ mod tests {
         let mut controller =
             AudioToggleController::new(config, backend, Arc::clone(&hardware), &icon_paths)
                 .unwrap();
-        controller.on_button_pressed(2).unwrap();
-        assert_eq!(controller.active_index(), 1);
+        assert!(controller.state_for_index(0).active);
+        assert!(controller.on_button_pressed(2).unwrap());
+        assert!(controller.state_for_index(1).active);
         let updates = hardware.updates();
         assert!(!updates.is_empty());
         assert_eq!(updates.last().unwrap().0, 2);
+    }
+
+    #[test]
+    fn selects_individual_buttons() {
+        let config = multi_button_config();
+        let backend = FakeBackend {
+            sinks: vec![
+                SinkInfo {
+                    id: Some(1),
+                    name: "sink_monitor".into(),
+                    description: Some("Monitor".into()),
+                },
+                SinkInfo {
+                    id: Some(2),
+                    name: "sink_headset".into(),
+                    description: Some("Headset".into()),
+                },
+                SinkInfo {
+                    id: Some(3),
+                    name: "sink_earbuds".into(),
+                    description: Some("Earbuds".into()),
+                },
+            ],
+            current: std::sync::Mutex::new(Some(SinkInfo {
+                id: Some(1),
+                name: "sink_monitor".into(),
+                description: Some("Monitor".into()),
+            })),
+            ..Default::default()
+        };
+
+        let hardware = Arc::new(RecordingHardware::new());
+        let icon_paths = IconPaths::new(None);
+        let mut controller =
+            AudioToggleController::new(config, backend, Arc::clone(&hardware), &icon_paths)
+                .unwrap();
+
+        assert!(controller.state_for_index(0).active);
+        assert!(controller.state_for_index(1).available);
+        assert!(controller.state_for_index(2).available);
+
+        assert!(controller.on_button_pressed(2).unwrap());
+        assert!(controller.state_for_index(2).active);
+
+        assert!(controller.on_button_pressed(1).unwrap());
+        assert!(controller.state_for_index(1).active);
     }
 
     #[test]

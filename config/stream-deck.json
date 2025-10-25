@@ -1,16 +1,23 @@
   {
     "audio_toggle": {
-      "button_index": 0,
       "outputs": [
         {
-          "id": 567,
-          "description": "Desktop Speakers",
+          "button_index": 0,
+          "name": "alsa_output.pci-0000_02_00.1.hdmi-stereo",
+          "description": "HDA NVidia Digital Stereo (HDMI)",
           "icon": { "material": "monitor" }
         },
         {
-          "id": 700,
-          "description": "Logitech A50 Headset",
+          "button_index": 1,
+          "name": "alsa_output.usb-Logitech_A50-00.iec958-stereo",
+          "description": "A50 Digital Stereo (IEC958)",
           "icon": { "material": "headphones" }
+        },
+        {
+          "button_index": 2,
+          "name": "bluez_output.E4_58_BC_8B_38_FC.1",
+          "description": "Bose QC Ultra 2 Earbuds",
+          "icon": "assets/bose.png"
         }
       ]
     },

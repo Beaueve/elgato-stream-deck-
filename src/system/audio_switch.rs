@@ -71,6 +71,7 @@ impl SinkSelector {
 pub trait AudioSwitchBackend: Send + Sync {
     fn set_default_sink(&self, selector: &SinkSelector) -> Result<SinkInfo>;
     fn current_default_sink(&self) -> Result<Option<SinkInfo>>;
+    fn list_sinks(&self) -> Result<Vec<SinkInfo>>;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -97,7 +98,7 @@ impl PulseAudioSwitch {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    fn list_sinks(&self) -> Result<Vec<SinkInfo>> {
+    fn list_sinks_internal(&self) -> Result<Vec<SinkInfo>> {
         let output = Self::run_pactl(&["list", "sinks"])?;
         let sinks = parse_sinks(&output);
         if sinks.is_empty() {
@@ -124,7 +125,7 @@ impl PulseAudioSwitch {
 
 impl AudioSwitchBackend for PulseAudioSwitch {
     fn set_default_sink(&self, selector: &SinkSelector) -> Result<SinkInfo> {
-        let sinks = self.list_sinks()?;
+        let sinks = self.list_sinks_internal()?;
         let sink = select_sink(&sinks, selector)?;
 
         Self::run_pactl(&["set-default-sink", &sink.name])
@@ -143,7 +144,7 @@ impl AudioSwitchBackend for PulseAudioSwitch {
             return Ok(None);
         };
 
-        let sinks = self.list_sinks()?;
+        let sinks = self.list_sinks_internal()?;
         if let Some(found) = sinks.iter().find(|sink| sink.name == default) {
             return Ok(Some(found.clone()));
         }
@@ -163,6 +164,10 @@ impl AudioSwitchBackend for PulseAudioSwitch {
             name: default,
             description: None,
         }))
+    }
+
+    fn list_sinks(&self) -> Result<Vec<SinkInfo>> {
+        self.list_sinks_internal()
     }
 }
 
