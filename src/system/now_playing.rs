@@ -78,7 +78,7 @@ impl PlayerctlBackend {
             warn!(
                 player = %self.player,
                 %reason,
-                "playerctl backend temporarily disabled"
+                "playerctl backend temporarily disabled; install `playerctl` or set `now_playing_player` in the config"
             );
         }
     }

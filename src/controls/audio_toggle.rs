@@ -152,7 +152,7 @@ where
         icon_paths: &IconPaths,
     ) -> Result<Self> {
         if config.outputs.is_empty() {
-            bail!("audio toggle requires at least one configured output");
+            bail!("audio toggle requires at least one configured output (set `audio_toggle.outputs` in the config)");
         }
 
         let fallback_button = config.button_index;
@@ -291,7 +291,7 @@ where
             if !matched_default {
                 warn!(
                     sink = %current_sink.name,
-                    "default sink not present in audio toggle configuration"
+                    "default sink not present in audio toggle configuration; add a matching `id`, `name`, or `description` under `audio_toggle.outputs`"
                 );
             }
         }
@@ -357,7 +357,7 @@ impl OutputProfile {
         let selector = config.selector()?;
         let button_index = config.button_index.or(fallback_button).ok_or_else(|| {
             anyhow!(
-                "audio output configuration at index {} must define `button_index`",
+                "audio output configuration at index {} must define `button_index` (set it on the output or set `audio_toggle.button_index`)",
                 index
             )
         })?;
@@ -392,7 +392,7 @@ impl AudioOutputConfig {
             return Ok(SinkSelector::by_description(description.clone()));
         }
 
-        bail!("audio toggle output entry must provide `id`, `name`, or `description`");
+        bail!("audio toggle output entry must provide `id`, `name`, or `description` (see `pactl list sinks short`)");
     }
 
     fn label(&self) -> String {
@@ -530,7 +530,7 @@ fn load_material_icon(icon: MaterialIcon, paths: &IconPaths) -> Result<ButtonIma
 
     Err(last_error.unwrap_or_else(|| {
         anyhow!(
-            "material icon {} not found; expected it in assets directory",
+            "material icon {} not found; expected it in assets directory (set `STREAMDECK_CTRL_ASSETS` or place icons next to the config in `assets/`)",
             filename
         )
     }))
@@ -543,8 +543,12 @@ fn load_icon_from_path(
     paths: &IconPaths,
 ) -> Result<ButtonImage> {
     let id = id_hint.into();
-    let resolved = resolve_icon_path(path, paths)
-        .ok_or_else(|| anyhow!("icon not found at {}", path.display()))?;
+    let resolved = resolve_icon_path(path, paths).ok_or_else(|| {
+        anyhow!(
+            "icon not found at {} (check `audio_toggle.outputs[].icon` and asset paths)",
+            path.display()
+        )
+    })?;
     load_icon_from_resolved(&resolved, id, tint)
 }
 

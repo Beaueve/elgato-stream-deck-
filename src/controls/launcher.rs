@@ -40,7 +40,7 @@ impl LauncherController {
                         error = %err,
                         button_index = entry.button_index,
                         path = %entry.desktop_file.display(),
-                        "skipping launcher button due to configuration error"
+                        "skipping launcher button due to configuration error; check `launchers` entries and `.desktop` paths"
                     );
                 }
             }

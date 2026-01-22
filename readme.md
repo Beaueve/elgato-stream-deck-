@@ -52,3 +52,33 @@ The script builds the project, installs `streamdeck_ctrl` to `/usr/local/bin`, s
    ```
 
 For a system-wide deployment, copy the unit to `/etc/systemd/system` and run the equivalent `systemctl` commands as root.
+
+## Configuration
+
+The config file is loaded from `STREAMDECK_CTRL_CONFIG` if set, otherwise from `~/.config/streamdeck_ctrl/stream-deck.json` (also `config/stream-deck.json` in the repo when running locally).
+
+Icons are resolved relative to the config file directory or an `assets/` subdirectory. You can also set `STREAMDECK_CTRL_ASSETS` to point at an assets directory.
+
+### Audio buttons (audio toggle)
+
+Use `audio_toggle` to map one or more audio sinks to Stream Deck buttons. Each output must match a sink `id`, `name`, or `description` (see `pactl list sinks short` / `pactl list sinks`).
+
+```json
+{
+  "audio_toggle": {
+    "button_index": 0,
+    "outputs": [
+      { "description": "HDMI/DisplayPort - HDA NVidia", "icon": { "material": "monitor" } },
+      { "description": "Digital Output - A50", "icon": { "material": "headphones" } }
+    ]
+  }
+}
+```
+
+- `button_index` sets the default button used to cycle outputs.
+- Each output can override `button_index` to pin it to a specific button.
+- `icon` can be `{ "material": "monitor" | "headphones" }` or a file path (relative to the config or assets dir).
+
+Other optional keys:
+- `now_playing_player`: playerctl selector string (e.g. `spotify,%any`).
+- `launchers`: list of `{ "button_index": 4, "desktop_file": "/path/to/app.desktop" }`.

@@ -78,7 +78,7 @@ impl App {
             Err(err) => {
                 warn!(
                     error = %err,
-                    "failed to load streamdeck_ctrl configuration; optional features disabled"
+                    "failed to load streamdeck_ctrl configuration; optional features disabled (set `STREAMDECK_CTRL_CONFIG` or create ~/.config/streamdeck_ctrl/stream-deck.json)"
                 );
                 None
             }
