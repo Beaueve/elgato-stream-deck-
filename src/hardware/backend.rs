@@ -230,8 +230,12 @@ fn run_backend(
 
     let mut displays: [Option<EncoderDisplay>; 4] = [None, None, None, None];
     let mut button_icons = vec![None; selected.kind.key_count() as usize];
-    render::flush_strip(&deck, &displays)?;
-    render::initialize_button_placeholders(&deck, &mut button_icons)?;
+    if let Err(err) = render::flush_strip(&deck, &displays) {
+        warn!(error = %err, "failed to render initial LCD strip");
+    }
+    if let Err(err) = render::initialize_button_placeholders(&deck, &mut button_icons) {
+        warn!(error = %err, "failed to render initial button placeholders");
+    }
 
     let mut encoder_press_state = [false; 4];
     let mut button_press_state = vec![false; selected.kind.key_count() as usize];
@@ -281,8 +285,12 @@ fn process_commands(
                 for icon in button_icons.iter_mut() {
                     *icon = None;
                 }
-                render::clear_buttons(deck)?;
-                render::clear_strip(deck)?;
+                if let Err(err) = render::clear_buttons(deck) {
+                    warn!(error = %err, "failed to clear button images");
+                }
+                if let Err(err) = render::clear_strip(deck) {
+                    warn!(error = %err, "failed to clear LCD strip");
+                }
                 displays_changed = false;
                 buttons_changed.clear();
                 continue;
@@ -291,11 +299,15 @@ fn process_commands(
     }
 
     if displays_changed {
-        render::flush_strip(deck, displays)?;
+        if let Err(err) = render::flush_strip(deck, displays) {
+            warn!(error = %err, "failed to update LCD strip");
+        }
     }
 
     if !buttons_changed.is_empty() {
-        render::flush_buttons(deck, button_icons, &buttons_changed)?;
+        if let Err(err) = render::flush_buttons(deck, button_icons, &buttons_changed) {
+            warn!(error = %err, "failed to update button images");
+        }
     }
 
     Ok(())
