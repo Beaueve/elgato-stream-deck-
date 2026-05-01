@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use crate::hardware::{ButtonImage, DisplayPipeline};
-use crate::system::audio_switch::{AudioSwitchBackend, PulseAudioSwitch, SinkInfo, SinkSelector};
+use crate::system::audio_switch::{AudioSwitchBackend, PulseAudioSwitch, SinkSelector};
 use crate::util::icons;
 
 const MATERIAL_ICON_TINT: [u8; 3] = [220, 235, 255];
@@ -601,6 +601,7 @@ mod tests {
     use super::*;
 
     use crate::hardware::{ButtonImage, EncoderDisplay, EncoderId};
+    use crate::system::audio_switch::SinkInfo;
     use once_cell::sync::Lazy;
     use std::env;
     use std::sync::{Arc, Mutex};

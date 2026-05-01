@@ -7,7 +7,8 @@ use tracing::{info, warn};
 use crate::config;
 use crate::controls::{
     AudioToggleController, AudioToggleSettings, BrightnessController, EncoderController,
-    LauncherController, NowPlayingController, Tickable, TimerController, VolumeController,
+    LauncherController, NowPlayingController, PostureReminderController, Tickable,
+    TimerController, VolumeController,
 };
 use crate::hardware::{
     EncoderId, HardwareConfig, HardwareEvent, HardwareHandle, start as start_hardware,
@@ -17,6 +18,8 @@ use crate::system::audio_switch::PulseAudioSwitch;
 use crate::system::brightness::DdcutilBackend;
 use crate::system::now_playing::PlayerctlBackend;
 
+const STREAM_DECK_PLUS_BUTTON_COUNT: u8 = 8;
+
 pub struct App {
     volume: VolumeController<PulseAudioBackend, HardwareHandle>,
     brightness: BrightnessController<DdcutilBackend, HardwareHandle>,
@@ -24,6 +27,7 @@ pub struct App {
     audio_toggle: Option<AudioToggleController<PulseAudioSwitch, HardwareHandle>>,
     now_playing: Option<NowPlayingController<PlayerctlBackend, HardwareHandle>>,
     launchers: Option<LauncherController>,
+    posture_reminder: Option<PostureReminderController<HardwareHandle>>,
     hardware: HardwareHandle,
     shutdown: Option<Receiver<()>>,
     events: Receiver<HardwareEvent>,
@@ -40,6 +44,8 @@ pub struct AppConfig {
     pub timer_min_secs: u64,
     pub timer_max_secs: u64,
     pub timer_default_secs: u64,
+    pub posture_reminder_min_secs: u64,
+    pub posture_reminder_max_secs: u64,
     pub pulse_sink: Option<String>,
     pub monitor_display: Option<String>,
     pub monitor_bus: Option<u8>,
@@ -59,6 +65,8 @@ impl Default for AppConfig {
             timer_min_secs: 30,
             timer_max_secs: 60 * 60,
             timer_default_secs: 25 * 60,
+            posture_reminder_min_secs: 10 * 60,
+            posture_reminder_max_secs: 30 * 60,
             pulse_sink: None,
             monitor_display: None,
             monitor_bus: None,
@@ -180,6 +188,25 @@ impl App {
             }
         };
 
+        let posture_reminder = match first_unused_button(config_settings.as_ref()) {
+            Some(button_index) => match PostureReminderController::new(
+                hardware_handle.clone(),
+                button_index,
+                config.posture_reminder_min_secs,
+                config.posture_reminder_max_secs,
+            ) {
+                Ok(controller) => Some(controller),
+                Err(err) => {
+                    warn!(error = %err, "failed to initialise posture reminder");
+                    None
+                }
+            },
+            None => {
+                warn!("all Stream Deck Plus buttons are already assigned; posture reminder disabled");
+                None
+            }
+        };
+
         Ok(Self {
             volume,
             brightness,
@@ -187,6 +214,7 @@ impl App {
             audio_toggle,
             now_playing,
             launchers,
+            posture_reminder,
             hardware: hardware_handle,
             shutdown: None,
             events,
@@ -208,23 +236,7 @@ impl App {
                             }
                         },
                         recv(ticker) -> _ => {
-                            if let Err(err) = self.timer.on_tick() {
-                                warn!(error = %err, "timer tick failed");
-                            }
-                            if let Err(err) = self.brightness.on_tick() {
-                                warn!(error = %err, "brightness tick failed");
-                            }
-                            if let Some(toggle) = self.audio_toggle.as_mut() {
-                                if let Err(err) = toggle.on_tick() {
-                                    warn!(error = %err, "audio sink update failed");
-                                }
-                            }
-
-                            if let Some(now_playing) = self.now_playing.as_mut() {
-                                if let Err(err) = now_playing.on_tick() {
-                                    warn!(error = %err, "now-playing update failed");
-                                }
-                            }
+                            self.handle_tick();
                         },
                         recv(shutdown) -> _ => {
                             break Ok(());
@@ -240,23 +252,7 @@ impl App {
                             }
                         },
                         recv(ticker) -> _ => {
-                            if let Err(err) = self.timer.on_tick() {
-                                warn!(error = %err, "timer tick failed");
-                            }
-                            if let Err(err) = self.brightness.on_tick() {
-                                warn!(error = %err, "brightness tick failed");
-                            }
-                            if let Some(toggle) = self.audio_toggle.as_mut() {
-                                if let Err(err) = toggle.on_tick() {
-                                    warn!(error = %err, "audio sink update failed");
-                                }
-                            }
-
-                            if let Some(now_playing) = self.now_playing.as_mut() {
-                                if let Err(err) = now_playing.on_tick() {
-                                    warn!(error = %err, "now-playing update failed");
-                                }
-                            }
+                            self.handle_tick();
                         }
                     }
                 }
@@ -268,6 +264,33 @@ impl App {
         }
 
         result
+    }
+
+    fn handle_tick(&mut self) {
+        if let Err(err) = self.timer.on_tick() {
+            warn!(error = %err, "timer tick failed");
+        }
+        if let Err(err) = self.brightness.on_tick() {
+            warn!(error = %err, "brightness tick failed");
+        }
+
+        if let Some(toggle) = self.audio_toggle.as_mut() {
+            if let Err(err) = toggle.on_tick() {
+                warn!(error = %err, "audio sink update failed");
+            }
+        }
+
+        if let Some(now_playing) = self.now_playing.as_mut() {
+            if let Err(err) = now_playing.on_tick() {
+                warn!(error = %err, "now-playing update failed");
+            }
+        }
+
+        if let Some(posture_reminder) = self.posture_reminder.as_mut() {
+            if let Err(err) = posture_reminder.on_tick() {
+                warn!(error = %err, "posture reminder update failed");
+            }
+        }
     }
 
     fn handle_event(&mut self, event: HardwareEvent) -> Result<()> {
@@ -331,6 +354,14 @@ impl App {
         }
 
         if !handled {
+            if let Some(posture_reminder) = self.posture_reminder.as_mut() {
+                if posture_reminder.on_button_pressed(index)? {
+                    handled = true;
+                }
+            }
+        }
+
+        if !handled {
             info!(index, "button pressed (unused)");
         }
 
@@ -351,5 +382,96 @@ impl Drop for App {
         if let Err(err) = self.hardware.clear_all_displays() {
             warn!(error = %err, "failed to clear stream deck displays on drop");
         }
+    }
+}
+
+fn first_unused_button(settings: Option<&config::StreamDeckSettings>) -> Option<u8> {
+    let mut used = [false; STREAM_DECK_PLUS_BUTTON_COUNT as usize];
+
+    if let Some(settings) = settings {
+        if let Some(audio_toggle) = settings.audio_toggle.as_ref() {
+            let fallback_button = audio_toggle.button_index;
+            for output in &audio_toggle.outputs {
+                if let Some(index) = output.button_index.or(fallback_button) {
+                    if let Some(slot) = used.get_mut(index as usize) {
+                        *slot = true;
+                    }
+                }
+            }
+        }
+
+        for launcher in &settings.launchers {
+            if let Some(slot) = used.get_mut(launcher.button_index as usize) {
+                *slot = true;
+            }
+        }
+    }
+
+    (0..STREAM_DECK_PLUS_BUTTON_COUNT).find(|index| !used[*index as usize])
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::config::LauncherButtonConfig;
+    use crate::controls::AudioToggleConfig;
+    use serde_json::json;
+
+    fn audio_toggle_config(value: serde_json::Value) -> AudioToggleConfig {
+        serde_json::from_value(value).expect("test audio toggle config should deserialize")
+    }
+
+    #[test]
+    fn picks_the_first_gap_between_assigned_buttons() {
+        let settings = config::StreamDeckSettings {
+            path: PathBuf::from("/tmp/stream-deck.json"),
+            audio_toggle: Some(audio_toggle_config(json!({
+                "button_index": 0,
+                "outputs": [
+                    { "name": "display" },
+                    { "button_index": 1, "name": "headset" },
+                    { "button_index": 2, "name": "earbuds" }
+                ]
+            }))),
+            now_playing_player: None,
+            launchers: vec![
+                LauncherButtonConfig {
+                    button_index: 4,
+                    desktop_file: PathBuf::from("/tmp/pycharm.desktop"),
+                },
+                LauncherButtonConfig {
+                    button_index: 5,
+                    desktop_file: PathBuf::from("/tmp/clion.desktop"),
+                },
+            ],
+        };
+
+        assert_eq!(first_unused_button(Some(&settings)), Some(3));
+    }
+
+    #[test]
+    fn returns_none_when_every_button_is_taken() {
+        let settings = config::StreamDeckSettings {
+            path: PathBuf::from("/tmp/stream-deck.json"),
+            audio_toggle: Some(audio_toggle_config(json!({
+                "outputs": [
+                    { "button_index": 0, "name": "sink-0" },
+                    { "button_index": 1, "name": "sink-1" },
+                    { "button_index": 2, "name": "sink-2" },
+                    { "button_index": 3, "name": "sink-3" }
+                ]
+            }))),
+            now_playing_player: None,
+            launchers: (4..8)
+                .map(|index| LauncherButtonConfig {
+                    button_index: index,
+                    desktop_file: PathBuf::from(format!("/tmp/app-{index}.desktop")),
+                })
+                .collect(),
+        };
+
+        assert_eq!(first_unused_button(Some(&settings)), None);
     }
 }

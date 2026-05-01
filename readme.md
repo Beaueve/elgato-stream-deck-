@@ -82,3 +82,7 @@ Use `audio_toggle` to map one or more audio sinks to Stream Deck buttons. Each o
 Other optional keys:
 - `now_playing_player`: playerctl selector string (e.g. `spotify,%any`).
 - `launchers`: list of `{ "button_index": 4, "desktop_file": "/path/to/app.desktop" }`.
+
+## Posture Reminder
+
+The first unassigned Stream Deck Plus button is reserved automatically for a posture reminder. It uses the bundled `icons8-haltung-100.png` asset, stays grey while idle, and then starts pulsing with colour after a random delay between 10 and 30 minutes. Press the button to acknowledge the reminder and start a new random interval.
